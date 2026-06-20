@@ -1,20 +1,17 @@
 package com.fleece.screensaver
 
-import android.annotation.SuppressLint
-import android.graphics.Color
+import android.opengl.GLSurfaceView
 import android.service.dreams.DreamService
-import android.webkit.WebView
 
 /**
- * Custom OLED-friendly screensaver: a black-hole accretion simulation rendered by a Canvas
- * page hosted in a WebView (the "fast path" from the handover). The panel is dimmed while
- * dreaming, and the animation is paused when the dream stops to save power.
+ * OLED-friendly screensaver: a black-hole accretion simulation rendered with OpenGL ES
+ * ([BlackHoleRenderer]). The panel is dimmed while dreaming, and the GL thread is paused when
+ * the dream stops.
  */
 class BlackHoleDreamService : DreamService() {
 
-    private var web: WebView? = null
+    private var glView: GLSurfaceView? = null
 
-    @SuppressLint("SetJavaScriptEnabled")
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         isInteractive = false
@@ -22,35 +19,27 @@ class BlackHoleDreamService : DreamService() {
         // Dim the OLED panel while dreaming (burn-in mitigation).
         window?.let { w -> w.attributes = w.attributes.apply { screenBrightness = 0.45f } }
 
-        web = WebView(this).apply {
-            setBackgroundColor(Color.BLACK)
-            isVerticalScrollBarEnabled = false
-            isHorizontalScrollBarEnabled = false
-            overScrollMode = WebView.OVER_SCROLL_NEVER
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            settings.mediaPlaybackRequiresUserGesture = false
-            loadUrl("file:///android_asset/screensaver.html")
+        val view = GLSurfaceView(this).apply {
+            setEGLContextClientVersion(2)
+            setRenderer(BlackHoleRenderer())
+            renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
         }
-        setContentView(web)
+        glView = view
+        setContentView(view)
     }
 
     override fun onDreamingStarted() {
         super.onDreamingStarted()
-        web?.onResume()
-        web?.resumeTimers()
+        glView?.onResume()
     }
 
     override fun onDreamingStopped() {
         super.onDreamingStopped()
-        // Pause the animation when the dream ends to save power.
-        web?.onPause()
-        web?.pauseTimers()
+        glView?.onPause()
     }
 
     override fun onDetachedFromWindow() {
-        web?.destroy()
-        web = null
+        glView = null
         super.onDetachedFromWindow()
     }
 }
