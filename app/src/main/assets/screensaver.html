@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Screensaver — Gargantua</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden}
+  canvas{display:block;width:100vw;height:100vh}
+  #hint{
+    position:fixed;left:50%;bottom:34px;transform:translateX(-50%);
+    font:500 12px/1 system-ui,sans-serif;letter-spacing:.18em;text-transform:uppercase;
+    color:rgba(255,255,255,.32);pointer-events:none;
+    transition:opacity 1.4s ease;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">Screen saver preview</div>
+<script>
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d', {alpha:false});
+const DPR = Math.min(window.devicePixelRatio||1, 2);
+const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+let W,H,S,cx,cy;
+function resize(){
+  W = cv.width  = Math.floor(innerWidth  * DPR);
+  H = cv.height = Math.floor(innerHeight * DPR);
+  S = Math.min(W,H) * 0.8;            // world -> pixels
+  cx = W/2; cy = H/2;
+}
+resize();
+addEventListener('resize', resize);
+
+/* ---------------- config ---------------- */
+const G        = 3e-6;     // gravity strength
+const Rh       = 0.10;     // event horizon (world units)
+const R_in     = 0.13;     // disk inner edge
+const R_out    = 0.48;     // disk outer edge
+const R_spawn  = 1.30;     // where infalling matter is born
+const TILT      = 72 * Math.PI/180;   // viewing inclination (near edge-on)
+const SIN = Math.sin(TILT), COS = Math.cos(TILT);
+const N        = 2800;
+const diskDrain= 0.0006;   // gentle accretion, applied ONLY to matter in the disk
+const kPlane   = 0.0012;   // pull toward disk plane near the hole
+const planeDmp = 0.03;     // vertical damping near the hole
+const SPEED    = reduce ? 0.35 : 1;
+const LUMA     = 0.72;     // global luminance cap for OLED safety (lower = dimmer/safer)
+
+/* ---------------- helpers ---------------- */
+function rand(a,b){return a + Math.random()*(b-a);}
+function vcirc(r){return Math.sqrt(G/r);}
+
+// temperature ramp by normalized radius t (0 inner .. 1 outer)
+const STOPS = [
+  [0.00, [205,226,255]],   // blue-white hot (inner)
+  [0.16, [255,251,240]],   // white
+  [0.42, [255,201,120]],   // gold
+  [0.70, [255,126,55]],    // orange
+  [1.00, [214,66,28]]      // ember red
+];
+function ramp(t){
+  t = t<0?0:t>1?1:t;
+  for(let i=1;i<STOPS.length;i++){
+    if(t<=STOPS[i][0]){
+      const a=STOPS[i-1], b=STOPS[i];
+      const f=(t-a[0])/(b[0]-a[0]);
+      return [a[1][0]+(b[1][0]-a[1][0])*f, a[1][1]+(b[1][1]-a[1][1])*f, a[1][2]+(b[1][2]-a[1][2])*f];
+    }
+  }
+  return STOPS[STOPS.length-1][1];
+}
+
+/* ---------------- particles ---------------- */
+const P = new Array(N);
+function randUnit(){
+  // random point on unit sphere
+  const u=Math.random()*2-1, th=Math.random()*Math.PI*2, s=Math.sqrt(1-u*u);
+  return [s*Math.cos(th), s*Math.sin(th), u];
+}
+function cross(a,b){return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];}
+function norm(v){const m=Math.hypot(v[0],v[1],v[2])||1;return [v[0]/m,v[1]/m,v[2]/m];}
+// angular-momentum axis biased toward +z, so infalling matter is prograde (co-rotating)
+function spinAxis(){return norm([rand(-0.55,0.55), rand(-0.55,0.55), 1]);}
+
+function seedDisk(p){
+  const ang = Math.random()*Math.PI*2;
+  const rr  = R_in + (R_out-R_in)*Math.pow(Math.random(),1.4);  // denser inner
+  p.x = rr*Math.cos(ang); p.y = rr*Math.sin(ang); p.z = rand(-0.01,0.01)*rr;
+  const v = vcirc(rr);
+  p.vx = -Math.sin(ang)*v; p.vy = Math.cos(ang)*v; p.vz = 0;
+}
+function seedInfall(p){
+  const dir = randUnit();
+  const rr  = rand(0.55, R_spawn);
+  p.x=dir[0]*rr; p.y=dir[1]*rr; p.z=dir[2]*rr;
+  const axis = spinAxis();
+  let t = norm(cross(axis, dir));
+  const v = vcirc(rr) * rand(0.62, 0.82);   // eccentric: dives in toward the disk
+  p.vx=t[0]*v; p.vy=t[1]*v; p.vz=t[2]*v;
+}
+function respawn(p){
+  const dir=randUnit(), rr=rand(R_out*1.3, R_spawn);
+  p.x=dir[0]*rr; p.y=dir[1]*rr; p.z=dir[2]*rr;
+  const axis=spinAxis(); let t=norm(cross(axis,dir));
+  const v=vcirc(rr)*rand(0.62,0.82);
+  p.vx=t[0]*v; p.vy=t[1]*v; p.vz=t[2]*v;
+}
+for(let i=0;i<N;i++){
+  const p={};
+  if(i < N*0.55) seedDisk(p); else seedInfall(p);
+  P[i]=p;
+}
+
+/* ---------------- simulation ---------------- */
+function step(dt){
+  for(let i=0;i<N;i++){
+    const p=P[i];
+    const r2=p.x*p.x+p.y*p.y+p.z*p.z+1e-6;
+    const r=Math.sqrt(r2);
+    const inv=G/(r2*r);
+    let ax=-inv*p.x, ay=-inv*p.y, az=-inv*p.z;
+    // flatten onto the disk plane, stronger near the hole
+    const f = Math.max(0, Math.min(1, (R_out*1.1 - r)/(R_out*1.1)));
+    az += -kPlane * p.z * f;
+    p.vx += ax*dt; p.vy += ay*dt; p.vz += az*dt;
+    p.vz *= (1 - planeDmp*f);                       // settle toward the disk plane
+    // Gentle accretion: ONLY matter already in the disk slowly migrates inward.
+    // Orbits are otherwise conservative, so the disk keeps its angular momentum,
+    // it swirls instead of collapsing straight in, and never drains away.
+    if(p.z*p.z < 0.0036 && r < R_out){
+      const d = 1 - diskDrain*dt;
+      p.vx *= d; p.vy *= d; p.vz *= d;
+    }
+    p.x += p.vx*dt; p.y += p.vy*dt; p.z += p.vz*dt;
+    if(r < Rh*0.92 || r > R_spawn*1.25) respawn(p);
+  }
+}
+
+/* ---------------- render ---------------- */
+const vref = vcirc(0.25);
+let driftX=0, driftY=0;
+
+function drawHole(ox,oy,t){
+  const rPx = Rh*S;
+  // soft warm back-glow where the disk plane crosses behind the hole (dimmed)
+  let g = ctx.createRadialGradient(ox,oy,rPx*0.6, ox,oy,rPx*3.2);
+  g.addColorStop(0,`rgba(255,170,90,${0.10*LUMA})`);
+  g.addColorStop(0.5,`rgba(255,120,60,${0.03*LUMA})`);
+  g.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.globalCompositeOperation='lighter';
+  ctx.fillStyle=g;
+  ctx.beginPath(); ctx.arc(ox,oy,rPx*3.2,0,7); ctx.fill();
+
+  // event horizon: solid black, occludes whatever is behind it
+  ctx.globalCompositeOperation='source-over';
+  ctx.fillStyle='#000';
+  ctx.beginPath(); ctx.arc(ox,oy,rPx,0,7); ctx.fill();
+
+  // Photon ring + lensing halo drawn as a ROTATING bright arc rather than a
+  // uniformly bright static circle. A low floor keeps the ring shape readable,
+  // while peak brightness sweeps around so no pixel stays bright for long.
+  ctx.globalCompositeOperation='lighter';
+  const segs=72, phase=t*0.00035;
+  for(let i=0;i<segs;i++){
+    const a0=i/segs*Math.PI*2, a1=(i+1)/segs*Math.PI*2, mid=(a0+a1)*0.5;
+    const lobe=Math.pow(0.55+0.45*Math.cos(mid-phase),2);   // rotating hotspot
+    ctx.beginPath(); ctx.arc(ox,oy,rPx*1.04,a0,a1);
+    ctx.lineWidth=2.0*DPR;
+    ctx.strokeStyle=`rgba(255,232,198,${LUMA*(0.07+0.34*lobe)})`;
+    ctx.stroke();
+    ctx.beginPath(); ctx.arc(ox,oy,rPx*1.16,a0,a1);
+    ctx.lineWidth=4.0*DPR;
+    ctx.strokeStyle=`rgba(255,205,150,${LUMA*(0.02+0.12*lobe)})`;
+    ctx.stroke();
+  }
+}
+
+function render(t){
+  // OLED-safe slow drift of the whole scene (pixel shift)
+  // OLED-safe wander: large, slow, quasi-random path so no region is lit for long.
+  // Two incommensurate frequencies per axis spread the bright core across a wide band.
+  driftX = (Math.sin(t*0.00005)*0.11 + Math.sin(t*0.000019+0.7)*0.05) * W;
+  driftY = (Math.sin(t*0.000061+1.3)*0.07 + Math.sin(t*0.000023+2.1)*0.04) * H;
+  const ox = cx + driftX, oy = cy + driftY;
+
+  // fade for motion trails
+  ctx.globalCompositeOperation='source-over';
+  ctx.fillStyle='rgba(0,0,0,0.18)';
+  ctx.fillRect(0,0,W,H);
+
+  // back particles -> hole -> front particles (painter's order)
+  for(let pass=0; pass<2; pass++){
+    if(pass===1) drawHole(ox,oy,t);
+    ctx.globalCompositeOperation='lighter';
+    for(let i=0;i<N;i++){
+      const p=P[i];
+      // rotate about X by TILT
+      const yr = p.y*COS - p.z*SIN;
+      const zr = p.y*SIN + p.z*COS;   // depth: >0 closer to camera
+      if(pass===0 ? zr>=0 : zr<0) continue;
+
+      const sx = ox + p.x*S;
+      const sy = oy + yr*S;
+      if(sx<-4||sx>W+4||sy<-4||sy>H+4) continue;
+
+      const r = Math.sqrt(p.x*p.x+p.y*p.y+p.z*p.z);
+      const tt = (r - Rh)/(R_out - Rh);
+      const col = ramp(tt);
+
+      // brightness: in-plane bright, off-plane dim (so infall brightens as it joins)
+      const pf = Math.exp(-(p.z*p.z)/(0.0045));
+      let a = (0.85 - 0.6*Math.min(1,tt)) * (0.25 + 0.75*pf);
+      a *= Math.max(0.12, Math.min(1, 1.25 - r/R_spawn));   // distant matter is faint
+      // relativistic beaming: approaching side brighter
+      const vzr = p.vy*SIN + p.vz*COS;
+      a *= 1 + 0.7*Math.max(-1,Math.min(1, vzr/vref));
+      a *= LUMA;
+      if(a<=0.012) continue;
+      if(a>0.5) a=0.5;
+
+      const size = (0.7 + 1.1*pf*(1-Math.min(1,tt)*0.6)) * DPR;
+      ctx.fillStyle = `rgba(${col[0]|0},${col[1]|0},${col[2]|0},${a})`;
+      ctx.beginPath();
+      ctx.arc(sx,sy,size,0,7);
+      ctx.fill();
+    }
+  }
+
+  // dim drifting clock (OLED-safe, useful for a screensaver)
+  const now=new Date();
+  const hh=String(now.getHours()).padStart(2,'0'), mm=String(now.getMinutes()).padStart(2,'0');
+  ctx.globalCompositeOperation='source-over';
+  ctx.fillStyle='rgba(220,228,240,0.16)';
+  ctx.font = `300 ${26*DPR}px system-ui, sans-serif`;
+  ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  const clkX = W*0.5 + Math.sin(t*0.00005)*W*0.04;
+  const clkY = H*0.86 + Math.sin(t*0.00006+2)*H*0.03;
+  ctx.fillText(`${hh}:${mm}`, clkX, clkY);
+}
+
+/* ---------------- loop ---------------- */
+let last=performance.now();
+function frame(now){
+  const dt = Math.min(2.2, (now-last)/16.667) * SPEED;
+  last=now;
+  // sub-step for stable gravity near the hole
+  const sub=2;
+  for(let s=0;s<sub;s++) step(dt/sub);
+  render(now);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// fade out the hint
+setTimeout(()=>{document.getElementById('hint').style.opacity='0';}, 3200);
+</script>
+</body>
+</html>

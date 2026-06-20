@@ -1,0 +1,18 @@
+# Gradle / build
+.gradle/
+build/
+.kotlin/
+
+# Local / machine-specific
+local.properties
+
+# IDE
+.idea/
+*.iml
+*.iws
+*.ipr
+.DS_Store
+
+# Signing / secrets
+*.jks
+*.keystore
