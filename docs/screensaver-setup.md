@@ -102,6 +102,17 @@ On-screen equivalent (does the same thing): **Settings → System → Storage �
 Internal shared storage → Apps → Special app access → Display over other apps →**
 turn **off** "Tv System UI".
 
+### 4b. Scenes (random rotation)
+
+The dream picks a **random scene** each time it activates (Android allows only one
+registered screensaver, so rotation happens inside the app): `0` black hole,
+`1` flow field, `2` starry waves. To pin one (testing or preference):
+
+```bash
+adb -s 192.168.1.186:5555 shell settings put system fleece_scene 2   # always waves
+adb -s 192.168.1.186:5555 shell settings delete system fleece_scene  # back to random
+```
+
 ### 5. Verify
 
 ```bash
