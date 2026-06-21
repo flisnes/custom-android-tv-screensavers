@@ -20,6 +20,7 @@ class BlackHoleDreamService : DreamService() {
         { BlackHoleRenderer() },
         { FlowFieldRenderer() },
         { WavesRenderer() },
+        { WheatFieldRenderer() },
     )
 
     private fun chooseRenderer(): GLSurfaceView.Renderer {
