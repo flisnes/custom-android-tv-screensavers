@@ -22,7 +22,7 @@ class WavesRenderer : GLSurfaceView.Renderer {
 
     // --- waves ---
     private val K = 6
-    private val SEG = 96
+    private val SEG = 170
     private val waveBuf = GlUtil.directFloats((SEG + 1) * 2 * 6)
 
     private var pointProg = 0
@@ -99,26 +99,42 @@ class WavesRenderer : GLSurfaceView.Renderer {
         for (l in 0 until K) {
             val f = l / (K - 1f)
             val baseY = lerp(0.47f, 0.82f, f) + driftY
-            val amp = lerp(0.012f, 0.035f, f)
-            val freq = lerp(8.0f, 3.2f, f)
-            val speed = lerp(0.15f, 0.45f, f)
-            val phase = ts * speed + l * 1.7f
+            val amp = lerp(0.013f, 0.040f, f)
+            val baseFreq = lerp(7.0f, 2.6f, f)         // far = more, smaller ripples
+            val speed = lerp(0.6f, 1.5f, f)            // near scrolls faster (parallax)
+            val seed = l * 1.7f
+            val group = 0.82f + 0.18f * sin(ts * 0.18f + seed)   // wave groups swell in/out
             val r = lerp(0.03f, 0.22f, f); val g = lerp(0.08f, 0.42f, f); val b = lerp(0.20f, 0.62f, f)
-            buildWave(baseY, amp, freq, phase, r, g, b)
+            buildWave(baseY, amp * group, baseFreq, ts, speed, seed, r, g, b)
             drawWave()
         }
     }
 
-    private fun buildWave(baseY: Float, amp: Float, freq: Float, phase: Float, r: Float, g: Float, b: Float) {
+    /**
+     * Builds one wave layer as a superposition of several travelling sine components with different
+     * wavelengths, speeds, and directions. Because the components move at different rates (and some
+     * travel the opposite way), the crest pattern continuously morphs via interference instead of
+     * rigidly sliding. A vertical colour ramp (lighter crest, darker base) makes it read as water.
+     */
+    private fun buildWave(baseY: Float, amp: Float, baseFreq: Float, t: Float, speed: Float,
+                          seed: Float, r: Float, g: Float, b: Float) {
+        val tr = minOf(1f, r * 1.20f); val tg = minOf(1f, g * 1.20f); val tb = minOf(1f, b * 1.20f)
+        val br = r * 0.72f; val bg = g * 0.72f; val bb = b * 0.72f
+        val a = baseFreq * 6.2831855f
+        val tt = t * speed
         waveBuf.clear()
         for (s in 0..SEG) {
             val xn = s / SEG.toFloat()
-            val topY = baseY + amp * sin(xn * freq * 6.2831855f + phase)
+            var hh = sin(xn * a + tt + seed)
+            hh += 0.50f * sin(xn * a * 2.3f - tt * 1.55f + seed * 1.7f)   // shorter, opposite way
+            hh += 0.30f * sin(xn * a * 3.7f + tt * 0.70f + seed * 2.3f)   // chop
+            hh += 0.62f * sin(xn * a * 0.55f - tt * 0.50f + seed * 0.9f)  // long swell, opposite way
+            hh += 0.18f * sin(xn * a * 2.0f + tt * 1.20f + seed * 0.3f)   // crest detail
+            val topY = baseY + amp * hh * 0.45f
             val ndcX = xn * 2f - 1f
             val ndcTop = 1f - topY * 2f
-            // top edge vertex, then bottom-of-screen vertex (triangle strip)
-            waveBuf.put(ndcX).put(ndcTop).put(r).put(g).put(b).put(1f)
-            waveBuf.put(ndcX).put(-1f).put(r).put(g).put(b).put(1f)
+            waveBuf.put(ndcX).put(ndcTop).put(tr).put(tg).put(tb).put(1f)   // crest (lighter)
+            waveBuf.put(ndcX).put(-1f).put(br).put(bg).put(bb).put(1f)      // base (darker)
         }
         waveBuf.position(0)
     }
