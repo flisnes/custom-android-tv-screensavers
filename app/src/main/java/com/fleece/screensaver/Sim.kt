@@ -59,6 +59,13 @@ class Sim(val n: Int = 2800) {
         vx[i] = tmpT[0] * v; vy[i] = tmpT[1] * v; vz[i] = tmpT[2] * v
     }
     private fun respawn(i: Int) {
+        // Most respawns refill the bright accretion disk (near-circular, in-plane) so it stays
+        // populated; the rest come back as inclined sub-circular infallers for plunge streams.
+        // Without this the disk drains into the hole faster than it's replenished and empties out.
+        if (Math.random().toFloat() < DISK_RESPAWN) {
+            seedDisk(i)
+            return
+        }
         randUnit(tmpDir)
         val rr = rnd(R_out * 1.3f, R_spawn)
         x[i] = tmpDir[0] * rr; y[i] = tmpDir[1] * rr; z[i] = tmpDir[2] * rr
@@ -96,8 +103,9 @@ class Sim(val n: Int = 2800) {
         const val R_in = 0.13f
         const val R_out = 0.48f
         const val R_spawn = 1.30f
-        const val diskDrain = 0.0006f
+        const val diskDrain = 0.00015f       // gentle inward accretion; low enough the disk persists
         const val kPlane = 0.0012f
         const val planeDmp = 0.03f
+        const val DISK_RESPAWN = 0.85f       // fraction of respawns that refill the disk (vs infall)
     }
 }
