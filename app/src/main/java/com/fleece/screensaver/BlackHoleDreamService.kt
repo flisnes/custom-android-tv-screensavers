@@ -6,11 +6,12 @@ import android.service.dreams.DreamService
 
 /**
  * OLED-friendly screensaver. Each time the dream activates it picks a random GL scene from
- * [scenes] (black hole / flow field / starry waves). The panel is dimmed while dreaming and the
- * GL thread is paused when the dream stops.
+ * the enabled subset of [scenes] (currently black hole / flow field). The panel is dimmed while
+ * dreaming and the GL thread is paused when the dream stops.
  *
  * Optional override: `settings put system fleece_scene <index>` pins one scene (0=black hole,
- * 1=flow field, 2=waves); any other value (or unset) = random each activation.
+ * 1=flow field, 2=waves, 3=wheat field, 4=aurora); any other value (or unset) = random each
+ * activation. Note the override can still pin scenes that are excluded from the random pool.
  */
 class BlackHoleDreamService : DreamService() {
 
@@ -21,13 +22,18 @@ class BlackHoleDreamService : DreamService() {
         { FlowFieldRenderer() },
         { WavesRenderer() },
         { WheatFieldRenderer() },
+        { AuroraRenderer() },
     )
+
+    // Indices eligible for random selection. Waves (2) and wheat field (3) are disabled from the
+    // random pool but can still be pinned via the fleece_scene override.
+    private val randomPool = listOf(0, 1, 4)
 
     private fun chooseRenderer(): GLSurfaceView.Renderer {
         val forced = runCatching {
             Settings.System.getInt(contentResolver, "fleece_scene", -1)
         }.getOrDefault(-1)
-        val idx = if (forced in scenes.indices) forced else scenes.indices.random()
+        val idx = if (forced in scenes.indices) forced else randomPool.random()
         return scenes[idx]()
     }
 
