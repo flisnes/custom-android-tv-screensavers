@@ -13,7 +13,7 @@ requires root, and every step is reversible.
 |---|---|
 | Model | Philips 65OLED705 (`TPM191E`) |
 | OS | Android TV / Google TV 12 (API 31) |
-| adb address | `192.168.1.186:5555` |
+| adb address | `192.168.10.40:5555` |
 | Our screensaver | `com.fleece.screensaver` (DreamService `.BlackHoleDreamService`) |
 | Stock Android dream | `com.google.android.backdrop/.Backdrop` (Google photo/clock) |
 | Philips logo screensaver | `org.droidtv.tvsystemui` (`.logodreams.*`, a firmware overlay) |
@@ -33,8 +33,8 @@ below assume `adb` is on your PATH.
 3. Leave network debugging on — it survives reboots and is your safety line.
 
 ```bash
-adb connect 192.168.1.186:5555
-adb devices            # should list 192.168.1.186:5555  device
+adb connect 192.168.10.40:5555
+adb devices            # should list 192.168.10.40:5555  device
 ```
 
 ## What was done
@@ -44,7 +44,7 @@ adb devices            # should list 192.168.1.186:5555  device
 ```bash
 # from the screensaver/ project root
 ./gradlew.bat -p . :app:assembleDebug
-adb -s 192.168.1.186:5555 install -r app/build/outputs/apk/debug/app-debug.apk
+adb -s 192.168.10.40:5555 install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
 The app is a single `DreamService` (`BlackHoleDreamService`) that hosts a GLSurfaceView
@@ -54,11 +54,11 @@ rendering the black-hole simulation (`BlackHoleRenderer` + `Sim`). It dims the p
 ### 2. Register it as the system screensaver
 
 ```bash
-adb -s 192.168.1.186:5555 shell settings put secure screensaver_enabled 1
-adb -s 192.168.1.186:5555 shell settings put secure screensaver_components \
+adb -s 192.168.10.40:5555 shell settings put secure screensaver_enabled 1
+adb -s 192.168.10.40:5555 shell settings put secure screensaver_components \
   com.fleece.screensaver/com.fleece.screensaver.BlackHoleDreamService
-adb -s 192.168.1.186:5555 shell settings put secure screensaver_activate_on_sleep 1
-adb -s 192.168.1.186:5555 shell settings put secure screensaver_activate_on_dock 1
+adb -s 192.168.10.40:5555 shell settings put secure screensaver_activate_on_sleep 1
+adb -s 192.168.10.40:5555 shell settings put secure screensaver_activate_on_dock 1
 ```
 
 ### 3. Make it actually start on idle (the timeout trap)
@@ -70,9 +70,9 @@ dreaming. The working combination:
 
 ```bash
 # Start the screensaver after 5 min idle...
-adb -s 192.168.1.186:5555 shell settings put system screen_off_timeout 300000
+adb -s 192.168.10.40:5555 shell settings put system screen_off_timeout 300000
 # ...but effectively never put the device to sleep, so the dream keeps running.
-adb -s 192.168.1.186:5555 shell settings put secure sleep_timeout 604800000
+adb -s 192.168.10.40:5555 shell settings put secure sleep_timeout 604800000
 ```
 
 `screen_off_timeout` = when the screensaver **starts**; `sleep_timeout` = when the
@@ -91,7 +91,7 @@ Because it draws as an **overlay**, the fix is to revoke `tvsystemui`'s
 "display over other apps" permission:
 
 ```bash
-adb -s 192.168.1.186:5555 shell appops set org.droidtv.tvsystemui SYSTEM_ALERT_WINDOW ignore
+adb -s 192.168.10.40:5555 shell appops set org.droidtv.tvsystemui SYSTEM_ALERT_WINDOW ignore
 ```
 
 After this the Philips screensaver's timer still fires internally (you may see a brief
@@ -105,28 +105,33 @@ turn **off** "Tv System UI".
 ### 4b. Scenes (random rotation)
 
 The dream picks a **random scene** each time it activates (Android allows only one
-registered screensaver, so rotation happens inside the app): `0` black hole,
-`1` flow field, `2` starry waves, `3` wheat field. To pin one (testing or preference):
+registered screensaver, so rotation happens inside the app). Scene indices:
+`0` black hole, `1` flow field, `2` wheat field, `3` murmuration, `4` vortex ocean,
+`5` galaxy, `6` ink in water, `7` embers. All are in the random pool except wheat
+field (`2`), which can only be shown by pinning it via the override below. (Starry
+waves, aurora, and grass field were removed; note the indices shifted, so any
+previously pinned `fleece_scene` value may now point at a different scene.)
+To pin one (testing or preference):
 
 ```bash
-adb -s 192.168.1.186:5555 shell settings put system fleece_scene 2   # always waves
-adb -s 192.168.1.186:5555 shell settings delete system fleece_scene  # back to random
+adb -s 192.168.10.40:5555 shell settings put system fleece_scene 3   # always murmuration
+adb -s 192.168.10.40:5555 shell settings delete system fleece_scene  # back to random
 ```
 
 ### 5. Verify
 
 ```bash
 # Registered screensaver should be ours
-adb -s 192.168.1.186:5555 shell settings get secure screensaver_components
+adb -s 192.168.10.40:5555 shell settings get secure screensaver_components
 
 # Overlay permission for tvsystemui should read "ignore"
-adb -s 192.168.1.186:5555 shell appops get org.droidtv.tvsystemui SYSTEM_ALERT_WINDOW
+adb -s 192.168.10.40:5555 shell appops get org.droidtv.tvsystemui SYSTEM_ALERT_WINDOW
 
 # Preview the dream now (component name may vary by build)
-adb -s 192.168.1.186:5555 shell am start -n com.android.systemui/.Somnambulator
+adb -s 192.168.10.40:5555 shell am start -n com.android.systemui/.Somnambulator
 
 # Reproduce the Philips trigger while idle — with the fix in place the logo must NOT appear
-adb -s 192.168.1.186:5555 shell am broadcast -a org.droidtv.intent.action.START_SCREENSAVER
+adb -s 192.168.10.40:5555 shell am broadcast -a org.droidtv.intent.action.START_SCREENSAVER
 ```
 
 > Note: `adb screencap` **can** capture the GL screensaver (unlike the older WebView
@@ -138,19 +143,19 @@ Each piece is independent; revert only what you want.
 
 ```bash
 # 1. Restore the Philips logo screensaver (re-grant the overlay permission)
-adb -s 192.168.1.186:5555 shell appops set org.droidtv.tvsystemui SYSTEM_ALERT_WINDOW allow
+adb -s 192.168.10.40:5555 shell appops set org.droidtv.tvsystemui SYSTEM_ALERT_WINDOW allow
 
 # 2. Restore the stock Android dream (Google photos/clock)
-adb -s 192.168.1.186:5555 shell settings put secure screensaver_components \
+adb -s 192.168.10.40:5555 shell settings put secure screensaver_components \
   com.google.android.backdrop/.Backdrop
 #   ...or pick another in Settings -> System -> Screen saver.
 
 # 3. Restore default idle timing (optional; values below are typical, adjust to taste)
-adb -s 192.168.1.186:5555 shell settings put system screen_off_timeout 300000
-adb -s 192.168.1.186:5555 shell settings put secure sleep_timeout 900000
+adb -s 192.168.10.40:5555 shell settings put system screen_off_timeout 300000
+adb -s 192.168.10.40:5555 shell settings put secure sleep_timeout 900000
 
 # 4. Remove the screensaver app entirely
-adb -s 192.168.1.186:5555 shell pm uninstall com.fleece.screensaver
+adb -s 192.168.10.40:5555 shell pm uninstall com.fleece.screensaver
 ```
 
 A **factory reset** also restores everything (the Philips screensaver and stock dream
@@ -174,14 +179,14 @@ were only suppressed/repointed, never removed).
 
 ```bash
 # Suppress Philips logo
-adb -s 192.168.1.186:5555 shell appops set org.droidtv.tvsystemui SYSTEM_ALERT_WINDOW ignore
+adb -s 192.168.10.40:5555 shell appops set org.droidtv.tvsystemui SYSTEM_ALERT_WINDOW ignore
 # Bring it back
-adb -s 192.168.1.186:5555 shell appops set org.droidtv.tvsystemui SYSTEM_ALERT_WINDOW allow
+adb -s 192.168.10.40:5555 shell appops set org.droidtv.tvsystemui SYSTEM_ALERT_WINDOW allow
 
 # Our screensaver on / off
-adb -s 192.168.1.186:5555 shell settings put secure screensaver_components com.fleece.screensaver/com.fleece.screensaver.BlackHoleDreamService
-adb -s 192.168.1.186:5555 shell settings put secure screensaver_components com.google.android.backdrop/.Backdrop
+adb -s 192.168.10.40:5555 shell settings put secure screensaver_components com.fleece.screensaver/com.fleece.screensaver.BlackHoleDreamService
+adb -s 192.168.10.40:5555 shell settings put secure screensaver_components com.google.android.backdrop/.Backdrop
 
 # Idle start delay (ms)
-adb -s 192.168.1.186:5555 shell settings put system screen_off_timeout 300000
+adb -s 192.168.10.40:5555 shell settings put system screen_off_timeout 300000
 ```

@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Screensaver Preview — Wheat Field</title>
+<style>
+  :root { --bg:#0c0d12; --panel:#14161d; --line:#262a35; --txt:#d7dae3; --dim:#8b91a1; --accent:#e0a44a; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--txt);
+    font:13px/1.45 -apple-system,Segoe UI,Roboto,sans-serif; }
+  .wrap { display:flex; height:100vh; }
+  .stage { flex:1; display:flex; flex-direction:column; min-width:0; }
+  .bar { display:flex; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid var(--line); }
+  .bar h1 { font-size:13px; margin:0; font-weight:600; letter-spacing:.02em; }
+  .bar .spacer { flex:1; }
+  .tab { background:var(--panel); color:var(--dim); border:1px solid var(--line); border-radius:6px;
+    padding:5px 12px; cursor:pointer; font:inherit; }
+  .tab.active { color:#fff; border-color:var(--accent); background:#1d1c18; }
+  button.act { background:var(--panel); color:var(--txt); border:1px solid var(--line); border-radius:6px;
+    padding:5px 10px; cursor:pointer; font:inherit; }
+  button.act:hover { border-color:var(--accent); }
+  .canvasbox { flex:1; display:flex; align-items:center; justify-content:center; padding:16px; min-height:0; }
+  canvas { background:#000; width:100%; height:100%; object-fit:contain; border-radius:8px;
+    box-shadow:0 8px 40px rgba(0,0,0,.6); }
+  .panel { width:340px; flex:none; border-left:1px solid var(--line); background:var(--panel);
+    overflow-y:auto; padding:12px 14px 40px; }
+  .group { margin-bottom:16px; }
+  .group h2 { font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--accent);
+    margin:0 0 8px; border-bottom:1px solid var(--line); padding-bottom:4px; }
+  .ctl { margin-bottom:10px; }
+  .ctl label { display:flex; justify-content:space-between; font-size:12px; margin-bottom:3px; }
+  .ctl label .val { color:var(--accent); font-variant-numeric:tabular-nums; }
+  .ctl .kt { color:var(--dim); font-size:10.5px; }
+  input[type=range] { width:100%; accent-color:var(--accent); }
+  .hint { color:var(--dim); font-size:11px; margin:0 0 14px; }
+  .fps { color:var(--dim); font-variant-numeric:tabular-nums; font-size:11px; }
+  #dump { width:100%; height:120px; background:#0c0d12; color:var(--dim); border:1px solid var(--line);
+    border-radius:6px; font:11px/1.4 ui-monospace,Consolas,monospace; padding:8px; resize:vertical; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="stage">
+    <div class="bar">
+      <h1>Screensaver Preview</h1>
+      <button class="tab active" data-scene="wheat">Wheat field</button>
+      <span class="spacer"></span>
+      <span class="fps" id="fps"></span>
+      <button class="act" id="reseed">Reseed</button>
+      <button class="act" id="reset">Reset</button>
+    </div>
+    <div class="canvasbox"><canvas id="gl" width="1280" height="720"></canvas></div>
+  </div>
+  <div class="panel">
+    <p class="hint">Live sliders below. Each is labelled with the Kotlin constant it maps to so you
+      can port liked values back into the renderer. <b>Dump values</b> prints them for copy-paste.
+      Deeper math (wind formula, projection) lives in this file's JS — edit and refresh.</p>
+    <div id="controls"></div>
+    <div class="group">
+      <h2>Port back to Kotlin</h2>
+      <button class="act" id="dumpbtn" style="margin-bottom:8px;">Dump current values</button>
+      <textarea id="dump" readonly placeholder="Click 'Dump current values'"></textarea>
+    </div>
+  </div>
+</div>
+<script>
+"use strict";
+const TAU = 6.2831855;
+const canvas = document.getElementById("gl");
+const gl = canvas.getContext("webgl", { antialias:true, alpha:false, premultipliedAlpha:false });
+if (!gl) alert("WebGL not available");
+
+// ---- shaders (mirrors GlUtil.kt) ----
+function sh(type, src){ const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(s)); return s; }
+function prog(vs, fs){ const p=gl.createProgram(); gl.attachShader(p,sh(gl.VERTEX_SHADER,vs));
+  gl.attachShader(p,sh(gl.FRAGMENT_SHADER,fs)); gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS)) console.error(gl.getProgramInfoLog(p)); return p; }
+
+const POINT = prog(
+  `attribute vec2 aPos; attribute vec4 aColor; attribute float aSize; varying vec4 vColor;
+   void main(){ gl_Position=vec4(aPos,0.,1.); gl_PointSize=aSize; vColor=aColor; }`,
+  `precision mediump float; varying vec4 vColor;
+   void main(){ float a=smoothstep(0.5,0.0,length(gl_PointCoord-vec2(0.5)));
+     gl_FragColor=vec4(vColor.rgb, vColor.a*a); }`);
+const FLAT = prog(
+  `attribute vec2 aPos; attribute vec4 aColor; varying vec4 vColor;
+   void main(){ gl_Position=vec4(aPos,0.,1.); vColor=aColor; }`,
+  `precision mediump float; varying vec4 vColor; void main(){ gl_FragColor=vColor; }`);
+const buf = gl.createBuffer();
+function drawArray(program, data, count, mode, stride, attrs){
+  gl.useProgram(program);
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+  for(const a of attrs){
+    const loc=gl.getAttribLocation(program, a.name);
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, a.size, gl.FLOAT, false, stride*4, a.offset*4);
+  }
+  gl.drawArrays(mode, 0, count);
+}
+const rnd = Math.random;
+const lerp = (a,b,f)=>a+(b-a)*f;
+const mix = lerp;
+
+// ============================================================ WHEAT FIELD
+// Faithful port of WheatFieldRenderer.kt
+const wheat = {
+  name:"wheat",
+  clear:[0.05,0.06,0.09],
+  params:[
+    {g:"Field"},
+    {key:"nStalks", label:"stalk count (nStalks)", min:100, max:5000, step:100, def:2200, regen:true},
+    {key:"horizon", label:"horizon", min:0.2, max:0.7, step:0.01, def:0.42, regen:true},
+    {key:"hFar", label:"height far (lerp lo)", min:0.01, max:0.4, step:0.005, def:0.05, regen:true},
+    {key:"hNear", label:"height near (lerp hi)", min:0.01, max:0.4, step:0.005, def:0.20, regen:true},
+    {key:"swayFar", label:"sway far (lerp lo)", min:0, max:0.08, step:0.001, def:0.006, regen:true},
+    {key:"swayNear", label:"sway near (lerp hi)", min:0, max:0.08, step:0.001, def:0.020, regen:true},
+    {g:"Wind"},
+    {key:"windAmp", label:"wind strength ×", min:0, max:3, step:0.05, def:1.0},
+    {key:"windSpeed", label:"wind speed ×", min:0, max:3, step:0.05, def:1.0},
+    {key:"gustScale", label:"gust spatial scale", min:0.3, max:6, step:0.1, def:2.2},
+    {key:"travel", label:"gust travel rate", min:0, max:2, step:0.02, def:0.5},
+    {key:"flutter", label:"flutter amount", min:0, max:0.3, step:0.005, def:0.06},
+    {g:"Motion"},
+    {key:"drift", label:"OLED drift ×", min:0, max:3, step:0.05, def:1.0},
+  ],
+  init(p){
+    const n=p.nStalks|0, horizon=p.horizon; this.n=n; this.horizon=horizon;
+    const tmpBy=new Float32Array(n);
+    for(let i=0;i<n;i++) tmpBy[i]=horizon+0.02+(1-horizon-0.02)*Math.pow(rnd(),1.15);
+    const ord=[...Array(n).keys()].sort((a,b)=>tmpBy[a]-tmpBy[b]);
+    const hazeR=0.78,hazeG=0.70,hazeB=0.55;
+    this.bx=new Float32Array(n); this.by=new Float32Array(n);
+    this.hgt=new Float32Array(n); this.hw=new Float32Array(n);
+    this.swayAmp=new Float32Array(n); this.phase=new Float32Array(n);
+    this.ampMul=new Float32Array(n); this.depth=new Float32Array(n);
+    this.baseR=new Float32Array(n); this.baseG=new Float32Array(n); this.baseB=new Float32Array(n);
+    this.tipR=new Float32Array(n); this.tipG=new Float32Array(n); this.tipB=new Float32Array(n);
+    for(let k=0;k<n;k++){
+      const src=ord[k], byv=tmpBy[src];
+      this.by[k]=byv; this.bx[k]=rnd();
+      const d=(byv-horizon)/(1-horizon); this.depth[k]=d;
+      this.hgt[k]=lerp(p.hFar,p.hNear,d);
+      this.hw[k]=lerp(0.0011,0.0030,d);
+      this.swayAmp[k]=lerp(p.swayFar,p.swayNear,d);
+      this.phase[k]=rnd()*TAU; this.ampMul[k]=0.8+rnd()*0.5;
+      const v=0.85+rnd()*0.30, dim=lerp(0.55,1.0,d), haze=(1-d)*0.45;
+      this.baseR[k]=mix(0.44*v,hazeR,haze)*dim; this.baseG[k]=mix(0.31*v,hazeG,haze)*dim; this.baseB[k]=mix(0.10*v,hazeB,haze)*dim;
+      this.tipR[k]=mix(0.95*v,hazeR,haze)*dim; this.tipG[k]=mix(0.80*v,hazeG,haze)*dim; this.tipB[k]=mix(0.36*v,hazeB,haze)*dim;
+    }
+  },
+  wind(p, nx, d, ts, ph){
+    const tt=ts*p.windSpeed;
+    const pp=nx*6.0+d*1.5+ph;
+    const base=0.6*Math.sin(pp-tt*0.9)+0.4*Math.sin(pp*0.5-tt*0.6+1.7);
+    const gust=0.5+0.5*Math.sin(nx*p.gustScale-tt*p.travel);
+    const flut=p.flutter*Math.sin(ts*3.5+ph*5);
+    return (base*(0.35+0.75*gust)+flut)*p.windAmp;
+  },
+  draw(p, ts){
+    const dx=Math.sin(ts*0.02)*0.008*p.drift, dy=Math.sin(ts*0.031)*0.006*p.drift;
+    gl.disable(gl.BLEND);
+    this.quad(0+dy, this.horizon+dy, 0.40,0.52,0.72, 0.97,0.84,0.60);   // sky
+    this.quad(this.horizon+dy, 1.2+dy, 0.82,0.66,0.38, 0.30,0.21,0.07); // floor
+    const n=this.n, d=new Float32Array(n*12*6); let o=0;
+    const put=(x,y,r,g,b)=>{ d.set([x*2-1,1-y*2,r,g,b,1], o); o+=6; };
+    for(let i=0;i<n;i++){
+      const s=this.swayAmp[i]*this.ampMul[i]*this.wind(p,this.bx[i],this.depth[i],ts,this.phase[i]);
+      const bxi=this.bx[i]+dx, byi=this.by[i]+dy;
+      const topY=byi-this.hgt[i], midY=byi-this.hgt[i]*0.5;
+      const dxMid=s*0.33, dxTop=s;
+      const hwB=this.hw[i], hwM=hwB*0.6, hwT=hwB*0.28;
+      const mr=(this.baseR[i]+this.tipR[i])*0.5,mg=(this.baseG[i]+this.tipG[i])*0.5,mb=(this.baseB[i]+this.tipB[i])*0.5;
+      put(bxi-hwB,byi,this.baseR[i],this.baseG[i],this.baseB[i]); put(bxi+hwB,byi,this.baseR[i],this.baseG[i],this.baseB[i]); put(bxi+dxMid-hwM,midY,mr,mg,mb);
+      put(bxi+dxMid-hwM,midY,mr,mg,mb); put(bxi+hwB,byi,this.baseR[i],this.baseG[i],this.baseB[i]); put(bxi+dxMid+hwM,midY,mr,mg,mb);
+      put(bxi+dxMid-hwM,midY,mr,mg,mb); put(bxi+dxMid+hwM,midY,mr,mg,mb); put(bxi+dxTop-hwT,topY,this.tipR[i],this.tipG[i],this.tipB[i]);
+      put(bxi+dxTop-hwT,topY,this.tipR[i],this.tipG[i],this.tipB[i]); put(bxi+dxMid+hwM,midY,mr,mg,mb); put(bxi+dxTop+hwT,topY,this.tipR[i],this.tipG[i],this.tipB[i]);
+    }
+    drawArray(FLAT, d, n*12, gl.TRIANGLES, 6,
+      [{name:"aPos",size:2,offset:0},{name:"aColor",size:4,offset:2}]);
+  },
+  quad(yTop,yBot, tr,tg,tb, br,bg,bb){
+    const nyT=1-yTop*2, nyB=1-yBot*2;
+    const d=new Float32Array([-1,nyT,tr,tg,tb,1, 1,nyT,tr,tg,tb,1, -1,nyB,br,bg,bb,1, 1,nyB,br,bg,bb,1]);
+    drawArray(FLAT, d, 4, gl.TRIANGLE_STRIP, 6,
+      [{name:"aPos",size:2,offset:0},{name:"aColor",size:4,offset:2}]);
+  }
+};
+
+// ============================================================ HARNESS
+const SCENES = { wheat };
+let scene = wheat;
+let vals = {};
+
+function collectDefaults(s){ const v={}; for(const it of s.params) if(it.key) v[it.key]=it.def; return v; }
+
+function buildControls(){
+  const root=document.getElementById("controls"); root.innerHTML="";
+  let cur=null;
+  for(const it of scene.params){
+    if(it.g){ const grp=document.createElement("div"); grp.className="group";
+      grp.innerHTML=`<h2>${it.g}</h2>`; root.appendChild(grp); cur=grp; continue; }
+    const wrap=document.createElement("div"); wrap.className="ctl";
+    const fmt=(x)=> (it.step<1? Number(x).toFixed(String(it.step).split(".")[1]?.length||2): String(x));
+    wrap.innerHTML=`<label><span>${it.label}</span><span class="val">${fmt(vals[it.key])}</span></label>`;
+    const inp=document.createElement("input"); inp.type="range";
+    inp.min=it.min; inp.max=it.max; inp.step=it.step; inp.value=vals[it.key];
+    inp.oninput=()=>{ vals[it.key]=parseFloat(inp.value);
+      wrap.querySelector(".val").textContent=fmt(vals[it.key]);
+      if(it.regen) scene.init(vals); };
+    wrap.appendChild(inp); (cur||root).appendChild(wrap);
+  }
+}
+
+function selectScene(name){
+  scene=SCENES[name];
+  vals=collectDefaults(scene);
+  scene.init(vals);
+  buildControls();
+  document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active", t.dataset.scene===name));
+}
+
+document.querySelectorAll(".tab").forEach(t=> t.onclick=()=>selectScene(t.dataset.scene));
+document.getElementById("reseed").onclick=()=>scene.init(vals);
+document.getElementById("reset").onclick=()=>selectScene(scene.name);
+document.getElementById("dumpbtn").onclick=()=>{
+  const lines=[`// ${scene.name} — current preview values`];
+  for(const it of scene.params) if(it.key) lines.push(`${it.key} = ${vals[it.key]}`);
+  document.getElementById("dump").value=lines.join("\n");
+};
+
+// render loop with dt clamping (matches Kotlin: dt>0.05 -> 0.05)
+let last=0, t=0, fps=0, fcount=0, facc=0;
+function frame(now){
+  if(!last) last=now;
+  let dt=(now-last)/1000; last=now; if(dt>0.05) dt=0.05; t+=dt;
+  facc+=dt; fcount++; if(facc>=0.5){ fps=Math.round(fcount/facc); fcount=0; facc=0;
+    document.getElementById("fps").textContent=fps+" fps"; }
+  gl.viewport(0,0,canvas.width,canvas.height);
+  gl.clearColor(scene.clear[0],scene.clear[1],scene.clear[2],1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  scene.draw(vals, t, dt);
+  requestAnimationFrame(frame);
+}
+selectScene("wheat");
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
