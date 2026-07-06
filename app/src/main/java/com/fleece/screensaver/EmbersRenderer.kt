@@ -7,10 +7,11 @@ import javax.microedition.khronos.opengles.GL10
 import kotlin.math.sin
 
 /**
- * Embers rising from an unseen fire below the screen: sparse sparks drift upward through gentle
- * turbulence, flickering, cooling from warm gold through orange to deep red before dying out.
- * A few oversized sparks pop. Short additive trails give each ember a bright comet head.
- * Everything rises continuously — OLED-safe.
+ * Embers rising from an unseen fire below the screen: sparse sparks ride turbulent convection —
+ * their rise speed surges and slackens with gusts of hot air rather than being constant, and the
+ * speed spread is wide (the big bright sparks are the fast ones; heavy cooling flakes dawdle).
+ * They flicker and cool from warm gold through orange to deep red before dying out. Very short
+ * additive trails keep them reading as sparks, not wisps. Everything rises — OLED-safe.
  */
 class EmbersRenderer : GLSurfaceView.Renderer {
     private val n = 1100
@@ -45,12 +46,13 @@ class EmbersRenderer : GLSurfaceView.Renderer {
     private fun respawn(i: Int) {
         y[i] = 1.02f + rnd() * 0.08f
         x[i] = rnd()
-        vy0[i] = -(0.16f + 0.19f * rnd())
+        big[i] = rnd() < 0.07f
+        // wide speed spread; the big bright sparks ride the plume fastest
+        vy0[i] = if (big[i]) -(0.30f + 0.20f * rnd()) else -(0.09f + 0.20f * rnd())
         life[i] = 5f + rnd() * 5f
         age[i] = 0f
         phase[i] = rnd() * 6.2831855f
         flk[i] = 4f + rnd() * 5f
-        big[i] = rnd() < 0.06f
     }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
@@ -67,7 +69,7 @@ class EmbersRenderer : GLSurfaceView.Renderer {
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
         GLES20.glViewport(0, 0, width, height)
         hPx = height.toFloat()
-        trail.resize(width, height, 0.13f)   // short comet heads
+        trail.resize(width, height, 0.24f)   // very short heads: sparks, not wisps
     }
 
     override fun onDrawFrame(gl: GL10?) {
@@ -85,7 +87,9 @@ class EmbersRenderer : GLSurfaceView.Renderer {
         for (i in 0 until n) {
             var h = (1f - age[i] / life[i]).coerceIn(0f, 1f)
             val vx = 0.030f * sin(ts * 0.7f + phase[i]) + 0.025f * sin(y[i] * 6f - ts * 0.9f + phase[i] * 3f)
-            y[i] += vy0[i] * (0.4f + 0.6f * h) * dtf     // cooling embers rise slower
+            // convection is gusty: rise speed surges and slackens, and cooling embers slow down
+            val surge = 0.65f + 0.35f * sin(ts * 1.4f + phase[i] * 2f)
+            y[i] += vy0[i] * (0.4f + 0.6f * h) * surge * dtf
             x[i] += vx * dtf
             age[i] += dtf
             if (y[i] < -0.03f || age[i] > life[i]) respawn(i)

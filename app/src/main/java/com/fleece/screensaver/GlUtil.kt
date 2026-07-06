@@ -74,8 +74,16 @@ class TrailFbo {
     private var tPos = 0; private var tTex = 0; private var uTex = 0
     private var fPos = 0; private var fColor = 0
     private val fadeQuad = GlUtil.directFloats(4 * 6)
+    private val subQuad = GlUtil.directFloats(4 * 6)
     private val fullQuad = GlUtil.directFloats(4 * 4)
     private var w = 0; private var h = 0
+
+    companion object {
+        // Extra per-frame constant subtraction. The multiplicative fade alone never reaches
+        // black in an 8-bit buffer (value*0.97 rounds back to itself once dim), leaving grey
+        // ghost trails; subtracting ~1.2/255 each frame guarantees pixels bottom out at 0.
+        private const val SUB = 1.2f / 255f
+    }
 
     fun init() {
         texProg = GlUtil.link(GlUtil.TEX_VS, GlUtil.TEX_FS)
@@ -116,6 +124,9 @@ class TrailFbo {
         val c = floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)
         for (k in 0 until 4) { fadeQuad.put(c[k * 2]).put(c[k * 2 + 1]).put(0f).put(0f).put(0f).put(fadeAlpha) }
         fadeQuad.position(0)
+        subQuad.clear()
+        for (k in 0 until 4) { subQuad.put(c[k * 2]).put(c[k * 2 + 1]).put(SUB).put(SUB).put(SUB).put(1f) }
+        subQuad.position(0)
     }
 
     /** Bind the accumulation buffer and fade the previous frame toward black (call at frame start). */
@@ -131,6 +142,15 @@ class TrailFbo {
         GLES20.glEnableVertexAttribArray(fColor)
         GLES20.glVertexAttribPointer(fColor, 4, GLES20.GL_FLOAT, false, 24, fadeQuad)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        // constant subtraction so dim trails decay all the way to pitch black (see SUB)
+        GLES20.glBlendEquation(GLES20.GL_FUNC_REVERSE_SUBTRACT)
+        GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE)
+        subQuad.position(0)
+        GLES20.glVertexAttribPointer(fPos, 2, GLES20.GL_FLOAT, false, 24, subQuad)
+        subQuad.position(2)
+        GLES20.glVertexAttribPointer(fColor, 4, GLES20.GL_FLOAT, false, 24, subQuad)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        GLES20.glBlendEquation(GLES20.GL_FUNC_ADD)
     }
 
     /** Unbind and blit the accumulation texture to the screen (call at frame end). */

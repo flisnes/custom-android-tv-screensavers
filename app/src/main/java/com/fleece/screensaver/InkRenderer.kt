@@ -7,23 +7,29 @@ import javax.microedition.khronos.opengles.GL10
 import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.min
+import kotlin.math.sin
 
 /**
- * Ink drops in water: every ~9s a drop of a new colour lands somewhere and blooms — particles get
- * a decaying radial burst, then churn in a fine, fast-evolving divergence-free field (curl of
- * high-frequency sines) with a touch of diffusion jitter and buoyancy. Big soft points and a slow
- * trail fade make the clouds billow and dissolve into each other. Clouds keep drifting and
- * dissolving, so nothing is static — OLED-safe.
+ * Ink drops in water. Every ~9s a droplet of a new colour falls in from the top, accelerating,
+ * and on impact the pool of idle particles bursts outward — a few fast ones streak into wispy
+ * tendrils, the rest bloom into a cloud. The burst velocity decays and a fine, fast-evolving
+ * divergence-free churn (curl of high-frequency sines) plus diffusion jitter takes over, so the
+ * cloud swirls and slowly disperses until its particles die and wait for the next drop.
+ * Landing points come from a hash-scrambled per-drop seed so consecutive drops land in genuinely
+ * different places. Clouds keep moving and dissolving — OLED-safe.
  */
 class InkRenderer : GLSurfaceView.Renderer {
     private val n = 2000
     private val dropPeriod = 9.0f
+    private val fallTime = 1.1f      // droplet fall duration; impact at k*dropPeriod + fallTime
 
     private val posX = FloatArray(n); private val posY = FloatArray(n)
     private val velX = FloatArray(n); private val velY = FloatArray(n)
     private val age = FloatArray(n)
     private val life = FloatArray(n)
+    private val alive = BooleanArray(n)
     private val cr = FloatArray(n); private val cg = FloatArray(n); private val cb = FloatArray(n)
+    private var lastBurst = -1       // drop index whose burst already happened
 
     private val palette = arrayOf(
         floatArrayOf(0.85f, 0.20f, 0.75f),   // magenta
@@ -33,8 +39,7 @@ class InkRenderer : GLSurfaceView.Renderer {
         floatArrayOf(0.95f, 0.50f, 0.25f),   // amber
     )
 
-    private val jrnd = java.util.Random()
-    private val pointBuf = GlUtil.directFloats(n * 7)
+    private val pointBuf = GlUtil.directFloats((n + 2) * 7)
     private val trail = TrailFbo()
     private var pointProg = 0
     private var pPos = 0; private var pColor = 0; private var pSize = 0
@@ -43,28 +48,38 @@ class InkRenderer : GLSurfaceView.Renderer {
     private var t = 0.0
 
     init {
+        // pre-seed: some particles alive in clouds from "past" drops, the rest idle and ready
+        // to burst with the first droplet
         for (i in 0 until n) {
-            age[i] = rnd() * 18f
-            life[i] = 12f + rnd() * 6f
-            val di = kotlin.math.floor(-age[i] / dropPeriod).toInt()   // the past drop it came from
-            val e = emitterPos(di)
-            posX[i] = e[0] + gauss() * (0.012f + age[i] * 0.008f)
-            posY[i] = e[1] + gauss() * (0.012f + age[i] * 0.008f)
-            val c = emitterColor(di)
-            cr[i] = c[0]; cg[i] = c[1]; cb[i] = c[2]
+            if (rnd() < 0.4f) {
+                val di = -1 - (rnd() * 2f).toInt()
+                val e = dropOf(di)
+                life[i] = 8f + rnd() * 6f
+                age[i] = rnd() * life[i] * 0.9f
+                posX[i] = e[0] + gauss() * (0.015f + age[i] * 0.010f)
+                posY[i] = e[1] + gauss() * (0.015f + age[i] * 0.010f)
+                cr[i] = e[2]; cg[i] = e[3]; cb[i] = e[4]
+                alive[i] = true
+            } else {
+                alive[i] = false
+            }
         }
     }
 
     private fun rnd() = Math.random().toFloat()
     private fun gauss() = (rnd() + rnd() + rnd() + rnd() - 2f) * 0.87f
 
-    /** Deterministic per-drop landing point (same trick as the Python prototype). */
-    private fun emitterPos(idx: Int): FloatArray {
-        val rs = java.util.Random(1000L + idx)
-        return floatArrayOf(0.2f + 0.6f * rs.nextFloat(), 0.22f + 0.56f * rs.nextFloat())
+    /**
+     * Deterministic landing point + colour for drop [idx]: (x, y, r, g, b). The seed is
+     * hash-scrambled — sequential java.util.Random seeds give correlated first outputs, which
+     * made every drop land in nearly the same spot.
+     */
+    private fun dropOf(idx: Int): FloatArray {
+        val rs = java.util.Random((idx.toLong() + 7L) * -0x61c8864680b583ebL)
+        rs.nextLong()   // extra warm-up draw
+        val c = palette[rs.nextInt(palette.size)]
+        return floatArrayOf(0.15f + 0.70f * rs.nextFloat(), 0.25f + 0.50f * rs.nextFloat(), c[0], c[1], c[2])
     }
-
-    private fun emitterColor(idx: Int): FloatArray = palette[((idx % palette.size) + palette.size) % palette.size]
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         GLES20.glClearColor(0f, 0f, 0f, 1f)
@@ -94,14 +109,35 @@ class InkRenderer : GLSurfaceView.Renderer {
         val ts = t.toFloat()
 
         val dropIdx = (ts / dropPeriod).toInt()
-        val e = emitterPos(dropIdx)
-        val ec = emitterColor(dropIdx)
-        val burstDecay = exp(-dtf / 1.5f)
-        val jit = 0.0015f * kotlin.math.sqrt(dtf * 60f)   // frame-rate-independent-ish jitter
+        val drop = dropOf(dropIdx)
+        val impactT = dropIdx * dropPeriod + fallTime
+
+        // burst: on impact, every idle particle spawns at the landing point
+        if (ts >= impactT && lastBurst != dropIdx) {
+            lastBurst = dropIdx
+            for (i in 0 until n) {
+                if (alive[i]) continue
+                posX[i] = drop[0] + gauss() * 0.006f
+                posY[i] = drop[1] + gauss() * 0.006f
+                val ang = rnd() * 6.2831855f
+                // most bloom gently; a few streak out fast as tendrils
+                val spd = (0.05f + rnd() * 0.16f) * (if (rnd() < 0.15f) 2.2f else 1f)
+                velX[i] = cos(ang) * spd
+                velY[i] = sin(ang) * spd
+                age[i] = 0f
+                life[i] = 8f + rnd() * 6f
+                cr[i] = drop[2]; cg[i] = drop[3]; cb[i] = drop[4]
+                alive[i] = true
+            }
+        }
+
+        val burstDecay = exp(-dtf / 1.2f)
+        val jit = 0.0015f * kotlin.math.sqrt(dtf * 60f)
 
         pointBuf.clear()
         var count = 0
         for (i in 0 until n) {
+            if (!alive[i]) continue
             // fine, fast-evolving local churn: curl of three high-frequency sine potentials
             val c1 = cos(13.0f * posX[i] + 17.0f * posY[i] + 0.7f * ts)
             val c2 = cos(23.0f * posX[i] + 19.0f * posY[i] + 1.1f * ts + 2.1f)
@@ -113,20 +149,27 @@ class InkRenderer : GLSurfaceView.Renderer {
             posX[i] += (vx + velX[i]) * dtf + gauss() * jit
             posY[i] += (vy + velY[i] + 0.004f) * dtf + gauss() * jit
             age[i] += dtf
-            if (age[i] > life[i]) {
-                posX[i] = e[0] + gauss() * 0.010f
-                posY[i] = e[1] + gauss() * 0.010f
-                velX[i] = gauss() * 0.045f
-                velY[i] = gauss() * 0.045f
-                age[i] = 0f
-                life[i] = 12f + rnd() * 6f
-                cr[i] = ec[0]; cg[i] = ec[1]; cb[i] = ec[2]
-            }
+            if (age[i] > life[i]) { alive[i] = false; continue }
+
             val lf = age[i] / life[i]
-            val env = min(age[i], 1f) * min((1f - lf) / 0.3f, 1f)
+            val env = min(age[i] / 0.3f, 1f) * min((1f - lf) / 0.4f, 1f)
             pointBuf.put(posX[i] * 2f - 1f).put(1f - posY[i] * 2f)
-            pointBuf.put(cr[i]).put(cg[i]).put(cb[i]).put(0.05f * env)
-            pointBuf.put((4f + 9f * lf) * hPx / 720f)
+            pointBuf.put(cr[i]).put(cg[i]).put(cb[i]).put(0.06f * env)
+            pointBuf.put((3.5f + 9f * lf) * hPx / 720f)
+            count++
+        }
+
+        // the falling droplet itself (accelerating, with a small glow)
+        if (ts >= impactT - fallTime && ts < impactT) {
+            val u = 1f - (impactT - ts) / fallTime
+            val dy = -0.03f + (drop[1] + 0.03f) * u * u
+            pointBuf.put(drop[0] * 2f - 1f).put(1f - dy * 2f)
+            pointBuf.put(drop[2]).put(drop[3]).put(drop[4]).put(0.9f)
+            pointBuf.put(7f * hPx / 720f)
+            count++
+            pointBuf.put(drop[0] * 2f - 1f).put(1f - dy * 2f)
+            pointBuf.put(1f).put(1f).put(1f).put(0.35f)
+            pointBuf.put(3.5f * hPx / 720f)
             count++
         }
         pointBuf.position(0)
