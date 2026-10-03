@@ -16,3 +16,6 @@ local.properties
 # Signing / secrets
 *.jks
 *.keystore
+
+# Moon height maps (~130 MB, regenerate with tools/moon_data.py)
+app/src/main/assets/moon/*.bin

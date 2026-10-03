@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Moon contour preview</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; color: #ccc; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  #panel { position: fixed; top: 12px; right: 12px; width: 300px; max-height: calc(100vh - 24px); overflow: auto;
+           background: rgba(20,20,20,.88); border: 1px solid #333; border-radius: 8px; padding: 10px 12px; }
+  #panel.hidden { display: none; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+  .tabs button { flex: 1; background: #222; color: #ccc; border: 1px solid #444; padding: 5px; cursor: pointer; border-radius: 4px; }
+  .tabs button.on { background: #ddd; color: #000; }
+  label { display: grid; grid-template-columns: 1fr 70px; align-items: center; gap: 6px; margin: 3px 0; }
+  label span.v { text-align: right; color: #fff; font-variant-numeric: tabular-nums; }
+  label small { color: #777; grid-column: 1 / -1; margin-top: -4px; }
+  input[type=range] { width: 100%; grid-column: 1 / -1; }
+  .row { display: flex; gap: 6px; margin-top: 8px; }
+  .row button { flex: 1; background: #222; color: #ccc; border: 1px solid #444; padding: 5px; cursor: pointer; border-radius: 4px; }
+  #status { color: #888; margin-top: 6px; white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 11px; }
+  #hint { position: fixed; left: 12px; bottom: 10px; color: #555; font-size: 11px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="panel">
+  <div class="tabs">
+    <button data-scene="zoom">Zoom sweep</button>
+    <button data-scene="globe">Globe sweep</button>
+    <button data-scene="lit">Lit globe</button>
+  </div>
+  <div id="controls"></div>
+  <div class="row">
+    <button id="next">Next window</button>
+    <button id="restart">Restart sweep</button>
+    <button id="dump">Dump values</button>
+  </div>
+  <div id="status">loading…</div>
+</div>
+<div id="hint">H hides the panel · N next window · R restarts the sweep · Space pauses</div>
+<script>
+// ---------------------------------------------------------------------------------------------
+// Serve the repo root (python -m http.server) and open /preview/moon.html — the page fetches the
+// shader and the height maps from app/src/main/assets/moon/. URL params for deterministic shots:
+//   ?scene=zoom|globe|lit  &seed=N  &t=SECONDS (fixed time)  &lat=..&lon=..&hh=.. (zoom window, deg)
+//   &sweep=0..1 (force sweep progress)  &panel=0
+// ---------------------------------------------------------------------------------------------
+const ASSETS = '../app/src/main/assets/moon/';
+const Q = new URLSearchParams(location.search);
+
+// Defaults mirror MoonRenderer.kt. [name, default, min, max, step, note]
+const SHARED = [
+  ['lineWidth', 1.4, 0.5, 4, 0.1, 'minor line width (px)'],
+  ['majorWidth', 2.2, 0.5, 6, 0.1, 'major line width (px)'],
+  ['majorEvery', 5, 1, 10, 1, 'every Nth level is major'],
+  ['minorBright', 0.45, 0, 1, 0.01],
+  ['majorBright', 0.8, 0, 1, 0.01],
+  ['glowBright', 0.9, 0, 2, 0.05, 'extra brightness of freshly swept lines'],
+  ['glowLevels', 2.5, 0, 10, 0.25, 'glow fades over this many levels'],
+  ['denseMax', 0.35, 0, 1, 0.05, 'grey cap where lines merge'],
+  ['sweepSec', 30, 3, 120, 1, 'min to max sweep duration'],
+  ['holdSec', 5, 0, 30, 0.5],
+  ['fadeSec', 2.5, 0, 10, 0.1],
+  ['ease', 0.6, 0, 1, 0.05, '0 = linear in area, 1 = strong ease in/out'],
+];
+const SCENES = {
+  zoom: { mode: 0, params: [
+    ['interval', 0, 0, 500, 5, 'contour interval (m); 0 = automatic per window'],
+    ['autoDensity', 0.3, 0.1, 0.6, 0.02, 'auto: levels per screen px at the 80th percentile slope'],
+    ['minInterval', 50, 10, 200, 5, 'auto: floor (m)'],
+    ['blur', 0.8, 0, 3, 0.1, 'gaussian blur of the source window (px)'],
+    ['halfHeightMin', 5, 2, 15, 0.5, 'window half-height, degrees (min)'],
+    ['halfHeightMax', 9, 2, 20, 0.5, 'window half-height, degrees (max)'],
+    ['latMax', 52, 0, 60, 1, 'pick centres within +- this latitude'],
+    ['driftZoom', 0.08, 0, 0.3, 0.01, 'zoom-in over the cycle (fraction)'],
+    ['driftPan', 0.03, 0, 0.1, 0.005, 'pan over the cycle (fraction of height)'],
+    ['smooth', 1, 0, 1, 1, 'bicubic sampling'],
+    ['pickBest', 3, 1, 8, 1, 'candidates per pick (keeps the roughest)'],
+    ...SHARED ] },
+  globe: { mode: 1, params: [
+    ['interval', 1000, 50, 2000, 10, 'contour interval (m)'],
+    ['globeBlur', 0, 0, 4, 0.25, 'extra blur of the globe map (texels; the asset is already smoothed)'],
+    ['smooth', 1, 0, 1, 1, 'bicubic sampling'],
+    ['radius', 0.86, 0.3, 1.0, 0.01, 'globe radius / half height'],
+    ['revSec', 360, 30, 1200, 10, 'seconds per revolution'],
+    ['tiltDeg', 18, -60, 60, 1, 'pole tipped toward camera'],
+    ['tiltWobble', 12, 0, 45, 1, 'slow tilt swing +- degrees'],
+    ['wobbleSec', 600, 60, 1800, 10],
+    ...SHARED ] },
+  lit: { mode: 2, params: [
+    ['interval', 400, 50, 2000, 10, 'contour interval (m)'],
+    ['globeBlur', 0, 0, 4, 0.25, 'extra blur of the globe map (texels; the asset is already smoothed)'],
+    ['smooth', 1, 0, 1, 1, 'bicubic sampling'],
+    ['radius', 0.86, 0.3, 1.0, 0.01],
+    ['revSec', 420, 30, 1200, 10],
+    ['tiltDeg', 18, -60, 60, 1],
+    ['tiltWobble', 12, 0, 45, 1],
+    ['wobbleSec', 600, 60, 1800, 10],
+    ['lightAz', -45, -180, 180, 1, 'light azimuth, degrees from up (negative = left)'],
+    ['lightEl', 55, 0, 89, 1, 'light elevation: 90 = straight from the camera'],
+    ['litSlope', 0.03, 0.002, 0.15, 0.002, 'slope (rise/run) counted as a real slope'],
+    ['litSoft', 0.3, 0.02, 1, 0.02, 'softness of the lit/unlit split'],
+    ['litAmbient', 0.04, 0, 0.5, 0.01, 'contours on unlit slopes'],
+    ['sweep', 0, 0, 1, 1, 'also run the sweep'],
+    ...SHARED ] },
+};
+for (const s of Object.values(SCENES)) { s.values = {}; for (const p of s.params) s.values[p[0]] = p[1]; }
+// Lit mode shows far fewer segments, so its lines are brighter (MoonRenderer.kt does the same).
+SCENES.lit.values.minorBright = 0.7; SCENES.lit.values.majorBright = 1.0;
+// URL overrides for any param: ?p.interval=80
+for (const [k, val] of Q.entries()) if (k.startsWith('p.')) for (const s of Object.values(SCENES)) if (k.slice(2) in s.values) s.values[k.slice(2)] = parseFloat(val);
+
+// --- state --------------------------------------------------------------------------------------
+let scene = Q.get('scene') in SCENES ? Q.get('scene') : 'zoom';
+let paused = false, hideUi = Q.get('panel') === '0';
+const fixedT = Q.has('t') ? parseFloat(Q.get('t')) : null;
+let seed = parseInt(Q.get('seed') || '1');
+function rng() { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }
+
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, preserveDrawingBuffer: true });
+const status = (t) => document.getElementById('status').textContent = t;
+if (!gl) status('WebGL2 not available');
+
+let prog, uni = {}, data = {}, tex = {}, quant = {};
+const unis = ['uHeight','uRes','uMode','uZoomCenter','uZoomHalfH','uExtract','uSmooth','uRotation','uTilt','uGlobeRadius',
+  'uLightDir','uLitSlope','uLitSoft','uLitAmbient','uInterval','uMajorEvery','uLineWidth','uMajorWidth','uMinorBright',
+  'uMajorBright','uSweepH','uGlowRange','uGlowBright','uDenseMax','uFade'];
+
+async function fetchBuf(url, label) {
+  status('loading ' + label + '…');
+  const r = await fetch(url); if (!r.ok) throw new Error(url + ' ' + r.status);
+  return r.arrayBuffer();
+}
+
+async function init() {
+  const fs = await (await fetch(ASSETS + 'moon.frag')).text();
+  const vs = '#version 300 es\nvoid main(){ vec2 p = vec2(gl_VertexID==1?3.0:-1.0, gl_VertexID==2?3.0:-1.0); gl_Position=vec4(p,0,1); }';
+  prog = link(vs, fs);
+  for (const u of unis) uni[u] = gl.getUniformLocation(prog, u);
+  data.manifest = await (await fetch(ASSETS + 'moon.json')).json();
+  data.globe = new Int16Array(await fetchBuf(ASSETS + data.manifest.globe.file, 'globe map'));
+  data.zoom = new Int16Array(await fetchBuf(ASSETS + data.manifest.zoom.file, 'zoom map'));
+  quant.globe = quantiles(data.globe, data.manifest.globe, 1 << 18);
+  buildControls(); setScene(scene);
+  status('ready');
+  document.title = 'Moon contour preview (ready)';
+  requestAnimationFrame(frame);
+}
+
+function link(vsSrc, fsSrc) {
+  const sh = (t, s) => { const o = gl.createShader(t); gl.shaderSource(o, s); gl.compileShader(o);
+    if (!gl.getShaderParameter(o, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(o)); return o; };
+  const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, vsSrc)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fsSrc));
+  gl.linkProgram(p); if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p)); return p;
+}
+
+function uploadR16F(w, h, f32, wrapS) {
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, w, h, 0, gl.RED, gl.FLOAT, f32);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrapS);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return t;
+}
+
+let globeBlurBuilt = -1;
+function ensureGlobeTexture(blur) {
+  if (globeBlurBuilt === blur) return;
+  globeBlurBuilt = blur;
+  const m = data.manifest.globe, scale = data.manifest.scale_m_per_dn;
+  const max = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+  let w = m.width, h = m.height, f32;
+  if (w <= max) { f32 = new Float32Array(w * h); for (let i = 0; i < f32.length; i++) f32[i] = data.globe[i] * scale; }
+  else { // 2x2 box downsample
+    const W = w >> 1, H = h >> 1; f32 = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const i = 2 * y * w + 2 * x;
+      f32[y * W + x] = (data.globe[i] + data.globe[i + 1] + data.globe[i + w] + data.globe[i + w + 1]) * 0.25 * scale; }
+    w = W; h = H;
+  }
+  if (blur > 0) f32 = gaussianBlur(f32, w, h, blur, true);
+  if (tex.globe) gl.deleteTexture(tex.globe);
+  tex.globe = uploadR16F(w, h, f32, gl.REPEAT);
+}
+
+// Separable gaussian blur of a w*h float grid; wrapX = longitude wraps.
+function gaussianBlur(src, w, h, sigma, wrapX) {
+  const r = Math.max(1, Math.ceil(sigma * 2.5)), k = new Float32Array(2 * r + 1);
+  let ks = 0; for (let i = -r; i <= r; i++) { k[i + r] = Math.exp(-i * i / (2 * sigma * sigma)); ks += k[i + r]; }
+  for (let i = 0; i < k.length; i++) k[i] /= ks;
+  const tmp = new Float32Array(w * h), out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const b = y * w;
+    for (let x = 0; x < w; x++) {
+      let s = 0;
+      for (let i = -r; i <= r; i++) { let xx = x + i; if (wrapX) xx = (xx + w) % w; else xx = xx < 0 ? 0 : xx >= w ? w - 1 : xx; s += src[b + xx] * k[i + r]; }
+      tmp[b + x] = s;
+    }
+  }
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let s = 0;
+    for (let i = -r; i <= r; i++) { let yy = y + i; yy = yy < 0 ? 0 : yy >= h ? h - 1 : yy; s += tmp[yy * w + x] * k[i + r]; }
+    out[y * w + x] = s;
+  }
+  return out;
+}
+
+// Snap a contour interval to a map-like value.
+const NICE = [10, 20, 25, 50, 75, 100, 150, 200, 250, 300, 400, 500, 600, 800, 1000, 1500, 2000];
+function niceInterval(x) { let best = NICE[0]; for (const n of NICE) if (Math.abs(Math.log(n / x)) < Math.abs(Math.log(best / x))) best = n; return best; }
+
+// Sorted sample of heights (metres): the sweep advances by equal area, not equal height. cos(lat) weighting for the globe.
+function quantiles(arr, m, n, weightLat = true) {
+  const scale = data.manifest.scale_m_per_dn, out = [];
+  let s = 12345; const r = () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296;
+  while (out.length < n) {
+    const y = Math.floor(r() * m.height), x = Math.floor(r() * m.width);
+    const lat = m.lat_max - (y + 0.5) / m.height * (m.lat_max - m.lat_min);
+    if (weightLat && r() > Math.cos(lat * Math.PI / 180)) continue;
+    out.push(arr[y * m.width + x] * scale);
+  }
+  out.sort((a, b) => a - b); return out;
+}
+const qAt = (q, p) => q[Math.max(0, Math.min(q.length - 1, Math.floor(p * (q.length - 1))))];
+
+// --- zoom windows -------------------------------------------------------------------------------
+let win = null;   // { lat, lon (rad), hh0 (rad), w, h, extract: [lon0, lat0, dlon, dlat], quant, roughness }
+let forceWindow = Q.has('lat');   // ?lat=&lon=&hh= pin the window (until N is pressed)
+function pickWindow() {
+  const v = SCENES.zoom.values, m = data.manifest.zoom;
+  const aspect = canvas.width / canvas.height;
+  let best = null;
+  const forced = forceWindow;
+  for (let k = 0; k < (forced ? 1 : v.pickBest); k++) {
+    const hhDeg = forced && Q.has('hh') ? parseFloat(Q.get('hh')) : v.halfHeightMin + rng() * (v.halfHeightMax - v.halfHeightMin);
+    const latDeg = forced ? parseFloat(Q.get('lat')) : (rng() * 2 - 1) * v.latMax;
+    const lonDeg = forced ? parseFloat(Q.get('lon')) : rng() * 360;
+    const c = extractWindow(latDeg, lonDeg, hhDeg, aspect, m);
+    if (!best || c.roughness > best.roughness) best = c;
+  }
+  win = best;
+  if (tex.zoom) gl.deleteTexture(tex.zoom);
+  tex.zoom = uploadR16F(best.w, best.h, best.f32, gl.CLAMP_TO_EDGE);
+  best.f32 = null;
+}
+
+function extractWindow(latDeg, lonDeg, hhDeg, aspect, m) {
+  const v = SCENES.zoom.values, scale = data.manifest.scale_m_per_dn, D = Math.PI / 180;
+  const margin = 1.0 + v.driftPan * 2 + 0.04;
+  const hh = hhDeg * D * margin;
+  const latTop = Math.min(latDeg * D + hh, m.lat_max * D), latBot = Math.max(latDeg * D - hh, m.lat_min * D);
+  const cosMin = Math.min(Math.cos(latTop), Math.cos(latBot));
+  const hw = hhDeg * D * aspect / Math.max(cosMin, 0.2) * margin;
+  const pxPerRad = m.ppd / D;
+  const row0 = Math.max(0, Math.floor((m.lat_max * D - latTop) * pxPerRad)), row1 = Math.min(m.height, Math.ceil((m.lat_max * D - latBot) * pxPerRad));
+  const col0 = Math.floor((lonDeg * D - hw) * pxPerRad), col1 = Math.ceil((lonDeg * D + hw) * pxPerRad);
+  const w = col1 - col0, h = row1 - row0; let f32 = new Float32Array(w * h);
+  let sum = 0, sum2 = 0;
+  for (let y = 0; y < h; y++) {
+    const rowBase = (row0 + y) * m.width;
+    for (let x = 0; x < w; x++) {
+      let cx = (col0 + x) % m.width; if (cx < 0) cx += m.width;
+      const hm = data.zoom[rowBase + cx] * scale; f32[y * w + x] = hm; sum += hm; sum2 += hm * hm;
+    }
+  }
+  const n = w * h, mean = sum / n, std = Math.sqrt(Math.max(sum2 / n - mean * mean, 0));
+  if (v.blur > 0) f32 = gaussianBlur(f32, w, h, v.blur, false);
+  // Quantiles (sweep) and slope percentile (auto interval) over the on-screen area only: the central part of the extract.
+  const q = [], gr = []; let s = 777; const r = () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296;
+  for (let i = 0; i < 65536; i++) {
+    const x = Math.floor((0.5 + (r() - 0.5) / margin) * (w - 2)) + 1, y = Math.floor((0.5 + (r() - 0.5) / margin) * (h - 2)) + 1, j = y * w + x;
+    q.push(f32[j]); gr.push(Math.abs(f32[j + 1] - f32[j - 1]) * 0.5 + Math.abs(f32[j + w] - f32[j - w]) * 0.5);
+  }
+  q.sort((a, b) => a - b); gr.sort((a, b) => a - b);
+  const screenPxPerSrcPx = canvas.height / (2 * hhDeg * D * pxPerRad);
+  const autoInterval = Math.max(v.minInterval, niceInterval(gr[Math.floor(gr.length * 0.8)] / screenPxPerSrcPx / v.autoDensity));
+  return { lat: latDeg * D, lon: lonDeg * D, hh0: hhDeg * D, w, h, f32, quant: q, roughness: std, interval: v.interval > 0 ? v.interval : autoInterval,
+    extract: [col0 / pxPerRad, m.lat_max * D - row0 / pxPerRad, w / pxPerRad, h / pxPerRad] };
+}
+
+// --- sweep state machine -------------------------------------------------------------------------
+let phase = 'sweep', phaseT = 0, cycleT = 0, lastNow = null, simT = 0;
+function sweepState(v, q, dt) {
+  phaseT += dt; cycleT += dt;
+  if (phase === 'sweep' && phaseT >= v.sweepSec) { phase = 'hold'; phaseT = 0; }
+  else if (phase === 'hold' && phaseT >= v.holdSec) { phase = 'fade'; phaseT = 0; }
+  else if (phase === 'fade' && phaseT >= v.fadeSec) { phase = 'sweep'; phaseT = 0; cycleT = 0; if (scene === 'zoom') pickWindow(); }
+  let p = phase === 'sweep' ? phaseT / v.sweepSec : 1;
+  if (Q.has('sweep')) p = parseFloat(Q.get('sweep'));
+  const e = p * p * (3 - 2 * p); p = p + (e - p) * v.ease;
+  const sweepH = p >= 1 ? 1e9 : qAt(q, p);
+  const fade = phase === 'fade' ? 1 - phaseT / v.fadeSec : (phase === 'sweep' ? Math.min(1, phaseT / 1.0) : 1);
+  return { sweepH, fade, progress: Math.min(cycleT / (v.sweepSec + v.holdSec + v.fadeSec), 1) };
+}
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  resize();
+  let dt = 0;
+  if (fixedT !== null) { dt = simT === 0 ? fixedT : 0; simT = fixedT; }
+  else { dt = lastNow === null ? 0 : Math.min((now - lastNow) / 1000, 0.1); lastNow = now; if (paused) dt = 0; simT += dt; }
+  const sc = SCENES[scene], v = sc.values;
+  if (sc.mode === 0 && !win) pickWindow();
+  if (sc.mode !== 0) ensureGlobeTexture(v.globeBlur);
+  const q = sc.mode === 0 ? win.quant : quant.globe;
+  const interval = sc.mode === 0 ? win.interval : v.interval;
+  const sweepOn = sc.mode !== 2 || v.sweep === 1;
+  const st = sweepOn ? sweepState(v, q, dt) : { sweepH: 1e9, fade: Math.min(1, simT / 2), progress: 0 };
+
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.useProgram(prog);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, sc.mode === 0 ? tex.zoom : tex.globe);
+  gl.uniform1i(uni.uHeight, 0);
+  gl.uniform2f(uni.uRes, canvas.width, canvas.height);
+  gl.uniform1i(uni.uMode, sc.mode);
+  gl.uniform1f(uni.uInterval, interval);
+  gl.uniform1i(uni.uSmooth, v.smooth);
+  gl.uniform1f(uni.uMajorEvery, v.majorEvery);
+  gl.uniform1f(uni.uLineWidth, v.lineWidth * devicePixelRatio);
+  gl.uniform1f(uni.uMajorWidth, v.majorWidth * devicePixelRatio);
+  gl.uniform1f(uni.uMinorBright, v.minorBright);
+  gl.uniform1f(uni.uMajorBright, v.majorBright);
+  gl.uniform1f(uni.uSweepH, st.sweepH);
+  gl.uniform1f(uni.uGlowRange, v.glowLevels * interval + 1e-3);
+  gl.uniform1f(uni.uGlowBright, v.glowBright);
+  gl.uniform1f(uni.uDenseMax, v.denseMax);
+  gl.uniform1f(uni.uFade, st.fade);
+  if (sc.mode === 0) {
+    const z = 1 - v.driftZoom * st.progress;
+    const ang = win.lon * 7.0 + win.lat * 3.0;     // per-window pan direction
+    const pan = v.driftPan * (st.progress - 0.5) * win.hh0 * 2;
+    gl.uniform2f(uni.uZoomCenter, win.lat + Math.sin(ang) * pan, win.lon + Math.cos(ang) * pan / Math.cos(win.lat));
+    gl.uniform1f(uni.uZoomHalfH, win.hh0 * z);
+    gl.uniform4f(uni.uExtract, win.extract[0], win.extract[1], win.extract[2], win.extract[3]);
+  } else {
+    const D = Math.PI / 180;
+    gl.uniform1f(uni.uRotation, simT * 2 * Math.PI / v.revSec);
+    gl.uniform1f(uni.uTilt, (v.tiltDeg + v.tiltWobble * Math.sin(simT * 2 * Math.PI / v.wobbleSec)) * D);
+    gl.uniform1f(uni.uGlobeRadius, v.radius);
+    if (sc.mode === 2) {
+      const az = v.lightAz * D, el = v.lightEl * D;
+      gl.uniform3f(uni.uLightDir, Math.sin(az) * Math.cos(el), Math.cos(az) * Math.cos(el), Math.sin(el));
+      gl.uniform1f(uni.uLitSlope, v.litSlope); gl.uniform1f(uni.uLitSoft, v.litSoft); gl.uniform1f(uni.uLitAmbient, v.litAmbient);
+    }
+  }
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  if (sc.mode === 0) status(`${phase} ${phaseT.toFixed(1)}s  sweep ${st.sweepH < 1e8 ? st.sweepH.toFixed(0) + ' m' : 'done'}\n` +
+    `window lat ${(win.lat * 180 / Math.PI).toFixed(1)} lon ${(win.lon * 180 / Math.PI).toFixed(1)} +-${(win.hh0 * 180 / Math.PI).toFixed(1)} deg  tex ${win.w}x${win.h}  sigma ${win.roughness.toFixed(0)} m  interval ${win.interval} m`);
+  else status(`${sweepOn ? phase + ' ' + phaseT.toFixed(1) + 's' : 'no sweep'}  t ${simT.toFixed(0)}s`);
+}
+
+function resize() {
+  const w = Math.floor(innerWidth * devicePixelRatio), h = Math.floor(innerHeight * devicePixelRatio);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; if (scene === 'zoom') win = null; }
+}
+
+// --- UI ------------------------------------------------------------------------------------------
+function buildControls() {
+  const root = document.getElementById('controls'); root.innerHTML = '';
+  const sc = SCENES[scene];
+  for (const [name, def, min, max, step, note] of sc.params) {
+    const l = document.createElement('label');
+    l.innerHTML = `<span>${name}</span><span class="v"></span>${note ? `<small>${note}</small>` : ''}<input type="range" min="${min}" max="${max}" step="${step}">`;
+    const inp = l.querySelector('input'), val = l.querySelector('.v');
+    inp.value = sc.values[name]; val.textContent = sc.values[name];
+    inp.oninput = () => { sc.values[name] = parseFloat(inp.value); val.textContent = inp.value; };
+    root.appendChild(l);
+  }
+  for (const b of document.querySelectorAll('.tabs button')) { b.classList.toggle('on', b.dataset.scene === scene); b.onclick = () => setScene(b.dataset.scene); }
+  document.getElementById('panel').classList.toggle('hidden', hideUi);
+}
+function setScene(s) { scene = s; phase = 'sweep'; phaseT = 0; cycleT = 0; simT = 0; if (s === 'zoom') win = null; buildControls(); }
+document.getElementById('next').onclick = () => { forceWindow = false; win = null; phase = 'sweep'; phaseT = 0; cycleT = 0; };
+document.getElementById('restart').onclick = () => { phase = 'sweep'; phaseT = 0; cycleT = 0; };
+document.getElementById('dump').onclick = () => { const t = JSON.stringify(SCENES[scene].values, null, 2); console.log(t); if (navigator.clipboard) navigator.clipboard.writeText(t); status('copied:\n' + t); };
+addEventListener('keydown', (e) => {
+  if (e.key === 'h' || e.key === 'H') { hideUi = !hideUi; document.getElementById('panel').classList.toggle('hidden', hideUi); }
+  if (e.key === 'n' || e.key === 'N') document.getElementById('next').onclick();
+  if (e.key === 'r' || e.key === 'R') document.getElementById('restart').onclick();
+  if (e.key === ' ') paused = !paused;
+});
+init().catch(e => { status('error: ' + e.message); document.title = 'Moon contour preview (error)'; });
+</script>
+</body>
+</html>

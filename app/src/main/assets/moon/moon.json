@@ -1,0 +1,24 @@
+{
+  "scale_m_per_dn": 0.5,
+  "globe": {
+    "file": "ldem_16.bin",
+    "width": 5760,
+    "height": 2880,
+    "ppd": 16,
+    "blur_sigma": 2.0,
+    "lat_min": -90,
+    "lat_max": 90,
+    "min_dn": -16986,
+    "max_dn": 20418
+  },
+  "zoom": {
+    "file": "ldem_32.bin",
+    "width": 11520,
+    "height": 4096,
+    "ppd": 32,
+    "lat_min": -64,
+    "lat_max": 64,
+    "min_dn": -17691,
+    "max_dn": 21510
+  }
+}

@@ -107,7 +107,8 @@ turn **off** "Tv System UI".
 The dream picks a **random scene** each time it activates (Android allows only one
 registered screensaver, so rotation happens inside the app). Scene indices:
 `0` black hole, `1` flow field, `2` wheat field, `3` murmuration, `4` vortex ocean,
-`5` galaxy, `6` ink in water, `7` embers. All are in the random pool except wheat
+`5` galaxy, `6` ink in water, `7` embers, `8` moon zoom contours, `9` moon globe
+contours, `10` moon lit globe. All are in the random pool except wheat
 field (`2`), which can only be shown by pinning it via the override below. (Starry
 waves, aurora, and grass field were removed; note the indices shifted, so any
 previously pinned `fleece_scene` value may now point at a different scene.)
@@ -117,6 +118,35 @@ To pin one (testing or preference):
 adb -s 192.168.10.40:5555 shell settings put system fleece_scene 3   # always murmuration
 adb -s 192.168.10.40:5555 shell settings delete system fleece_scene  # back to random
 ```
+
+### 4c. Moon contour scenes (8, 9, 10) and their height-map data
+
+The three moon scenes (`MoonRenderer.kt`, GL ES 3.0) draw topographic contour lines of
+the real lunar surface from NASA's LRO **LOLA** laser-altimeter height model:
+
+- `8` **zoom** — a random window of the surface (biased to rough terrain); a sweep rises from
+  the lowest to the highest point drawing each contour as it passes, holds, fades, repeats.
+  The contour interval adapts per window (maria get ~50 m, highlands a few hundred).
+- `9` **globe** — slowly spinning orthographic globe, 1000 m contours, same continuous sweep.
+- `10` **lit globe** — spinning globe with a light behind the camera, upper-left: only the
+  contour segments on slopes facing the light are drawn (an engraved/hatched look).
+
+The height maps are **not in git** (~130 MB). Regenerate them once before building:
+
+```bash
+# download (public domain, NASA/GSFC; 33 MB + 530 MB)
+curl -L -o LDEM_16.IMG https://imbrium.mit.edu/DATA/LOLA_GDR/CYLINDRICAL/IMG/LDEM_16.IMG
+curl -L -o LDEM_64.IMG https://imbrium.mit.edu/DATA/LOLA_GDR/CYLINDRICAL/IMG/LDEM_64.IMG
+python tools/moon_data.py <dir containing the two IMG files>
+# -> app/src/main/assets/moon/ldem_16.bin (globe), ldem_32.bin (zoom, lat ±64°), moon.json
+```
+
+They are stored uncompressed in the APK (`noCompress "bin"`) so the zoom scene can
+memory-map the 32 px/deg grid and read only the window it needs. Expect the APK to be
+~130 MB; `adb install` over Wi-Fi takes a minute.
+
+The look is tuned in the browser first: `preview/moon.html` runs the *same* fragment shader
+(`app/src/main/assets/moon/moon.frag`) against the same data — see `preview/README.md`.
 
 ### 5. Verify
 

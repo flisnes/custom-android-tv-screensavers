@@ -44,3 +44,32 @@ coordinate mapping, same `dt`-clamped time stepping, so what you see closely mat
 This sandbox is a **copy** of the math. Changes here do **not** flow into the app
 automatically; you must port liked values back into the Kotlin renderers by hand, then
 `gradlew installDebug` to see them on the TV.
+
+## Moon contour scenes — `preview/moon.html`
+
+A second page for the three **moon** scenes (zoom sweep, globe sweep, lit globe). Unlike the
+ports above it is **exact**: it runs `app/src/main/assets/moon/moon.frag` verbatim (WebGL2) on
+the same height-map assets the APK ships, and the JS sweep/window logic mirrors
+`MoonRenderer.kt` line for line.
+
+It needs a web server (it fetches the shader and ~130 MB of height data), so from the repo root:
+
+```powershell
+python -m http.server 8765
+Start-Process http://127.0.0.1:8765/preview/moon.html
+```
+
+Generate the assets first if `app/src/main/assets/moon/*.bin` are missing (see
+`docs/screensaver-setup.md` §4c / `tools/moon_data.py`).
+
+- Tabs switch scene; every slider is named after the constant in `MoonRenderer.kt`.
+- `H` hides the panel, `N` picks the next zoom window, `R` restarts the sweep, `Space` pauses.
+- **Dump values** copies the current numbers as JSON to port back into the Kotlin defaults.
+- URL parameters give deterministic frames (handy for screenshots):
+  `?scene=zoom|globe|lit&seed=3&t=20` (fixed sim time), `&lat=-43&lon=349&hh=6` (force a zoom
+  window, degrees), `&sweep=0.5` (force sweep progress), `&panel=0`, and `&p.<param>=<value>`
+  for any slider (e.g. `&p.interval=750&p.globeBlur=2`).
+
+Line widths are in 1080p pixels; the renderer scales them with the surface height, so a 4K
+surface draws proportionally thicker lines (and resolves far more contours before they merge
+into grey).

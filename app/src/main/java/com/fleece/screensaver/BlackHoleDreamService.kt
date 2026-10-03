@@ -10,35 +10,42 @@ import android.service.dreams.DreamService
  * paused when the dream stops.
  *
  * Optional override: `settings put system fleece_scene <index>` pins one scene (0=black hole,
- * 1=flow field, 2=wheat field, 3=murmuration, 4=vortex ocean, 5=galaxy, 6=ink, 7=embers);
- * any other value (or unset) = random each activation. Note the override can still pin scenes
- * that are excluded from the random pool.
+ * 1=flow field, 2=wheat field, 3=murmuration, 4=vortex ocean, 5=galaxy, 6=ink, 7=embers,
+ * 8=moon zoom contours, 9=moon globe contours, 10=moon lit globe); any other value (or unset) =
+ * random each activation. Note the override can still pin scenes that are excluded from the
+ * random pool.
  */
 class BlackHoleDreamService : DreamService() {
 
     private var glView: GLSurfaceView? = null
 
-    private val scenes = listOf<() -> GLSurfaceView.Renderer>(
-        { BlackHoleRenderer() },
-        { FlowFieldRenderer() },
-        { WheatFieldRenderer() },
-        { MurmurationRenderer() },
-        { VortexRenderer() },
-        { GalaxyRenderer() },
-        { InkRenderer() },
-        { EmbersRenderer() },
+    /** A scene: the GL ES context version it needs and a factory for its renderer. */
+    private class Scene(val glVersion: Int = 2, val make: () -> GLSurfaceView.Renderer)
+
+    private val scenes = listOf(
+        Scene { BlackHoleRenderer() },
+        Scene { FlowFieldRenderer() },
+        Scene { WheatFieldRenderer() },
+        Scene { MurmurationRenderer() },
+        Scene { VortexRenderer() },
+        Scene { GalaxyRenderer() },
+        Scene { InkRenderer() },
+        Scene { EmbersRenderer() },
+        Scene(glVersion = 3) { MoonRenderer(this, MoonRenderer.Mode.ZOOM) },
+        Scene(glVersion = 3) { MoonRenderer(this, MoonRenderer.Mode.GLOBE) },
+        Scene(glVersion = 3) { MoonRenderer(this, MoonRenderer.Mode.LIT) },
     )
 
     // Indices eligible for random selection. Wheat field (2) is disabled from the random pool
     // but can still be pinned via the fleece_scene override.
-    private val randomPool = listOf(0, 1, 3, 4, 5, 6, 7)
+    private val randomPool = listOf(0, 1, 3, 4, 5, 6, 7, 8, 9, 10)
 
-    private fun chooseRenderer(): GLSurfaceView.Renderer {
+    private fun chooseScene(): Scene {
         val forced = runCatching {
             Settings.System.getInt(contentResolver, "fleece_scene", -1)
         }.getOrDefault(-1)
         val idx = if (forced in scenes.indices) forced else randomPool.random()
-        return scenes[idx]()
+        return scenes[idx]
     }
 
     override fun onAttachedToWindow() {
@@ -48,9 +55,10 @@ class BlackHoleDreamService : DreamService() {
         // Dim the OLED panel while dreaming (burn-in mitigation).
         window?.let { w -> w.attributes = w.attributes.apply { screenBrightness = 0.45f } }
 
+        val scene = chooseScene()
         val view = GLSurfaceView(this).apply {
-            setEGLContextClientVersion(2)
-            setRenderer(chooseRenderer())
+            setEGLContextClientVersion(scene.glVersion)
+            setRenderer(scene.make())
             renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
         }
         glView = view

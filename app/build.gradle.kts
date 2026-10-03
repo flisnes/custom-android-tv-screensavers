@@ -32,6 +32,11 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    androidResources {
+        // The moon height maps are memory-mapped straight out of the APK, so they must stay uncompressed.
+        noCompress += listOf("bin")
+    }
 }
 
 dependencies {
