@@ -122,9 +122,10 @@ The dream picks a **random scene** each time it activates (Android allows only o
 registered screensaver, so rotation happens inside the app). Scene indices:
 `0` black hole, `1` flow field, `2` wheat field, `3` murmuration, `4` vortex ocean,
 `5` galaxy, `6` ink in water, `7` embers, `8` moon zoom contours, `9` moon globe
-contours, `10` moon lit globe. All are in the random pool except wheat
-field (`2`), which can only be shown by pinning it via the override below. (Starry
-waves, aurora, and grass field were removed; note the indices shifted, so any
+contours, `10` moon lit globe. The random pool is black hole, flow field, embers and the
+three moon scenes (`0 1 7 8 9 10`); wheat field (`2`), murmuration (`3`), vortex ocean (`4`),
+galaxy (`5`) and ink (`6`) are kept in the app but only shown when pinned via the override
+below. (Starry waves, aurora, and grass field were removed; note the indices shifted, so any
 previously pinned `fleece_scene` value may now point at a different scene.)
 To pin one (testing or preference):
 
@@ -141,7 +142,7 @@ the real lunar surface from NASA's LRO **LOLA** laser-altimeter height model:
 - `8` **zoom** — a random window of the surface (biased to rough terrain); a sweep rises from
   the lowest to the highest point drawing each contour as it passes, holds, fades, repeats.
   The contour interval adapts per window (maria get ~50 m, highlands a few hundred).
-- `9` **globe** — slowly spinning orthographic globe, 1000 m contours, same continuous sweep.
+- `9` **globe** — slowly spinning orthographic globe, 2000 m contours, same continuous sweep.
 - `10` **lit globe** — spinning globe with a light behind the camera, upper-left: only the
   contour segments on slopes facing the light are drawn (an engraved/hatched look).
 

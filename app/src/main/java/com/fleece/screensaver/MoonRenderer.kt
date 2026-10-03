@@ -70,8 +70,8 @@ class MoonRenderer(private val context: Context, private val mode: Mode) : GLSur
     private val pickBest = 3
 
     // globe / lit
-    private val globeInterval = 1000f
-    private val litInterval = 400f
+    private val globeInterval = 2000f
+    private val litInterval = 800f
     private val globeRadius = 0.86f
     private val revSec = if (mode == Mode.LIT) 420f else 360f
     private val tiltDeg = 18f

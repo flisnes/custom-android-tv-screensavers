@@ -36,9 +36,10 @@ class BlackHoleDreamService : DreamService() {
         Scene(glVersion = 3) { MoonRenderer(this, MoonRenderer.Mode.LIT) },
     )
 
-    // Indices eligible for random selection. Wheat field (2) is disabled from the random pool
-    // but can still be pinned via the fleece_scene override.
-    private val randomPool = listOf(0, 1, 3, 4, 5, 6, 7, 8, 9, 10)
+    // Indices eligible for random selection. Wheat field (2), murmuration (3), vortex ocean (4),
+    // galaxy (5) and ink (6) are left out of the random pool but can still be pinned via the
+    // fleece_scene override.
+    private val randomPool = listOf(0, 1, 7, 8, 9, 10)
 
     private fun chooseScene(): Scene {
         val forced = runCatching {
