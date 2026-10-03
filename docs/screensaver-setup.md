@@ -13,7 +13,7 @@ requires root, and every step is reversible.
 |---|---|
 | Model | Philips 65OLED705 (`TPM191E`) |
 | OS | Android TV / Google TV 12 (API 31) |
-| adb address | `192.168.10.40:5555` |
+| adb address | `192.168.10.40:5555` (DHCP — it was `192.168.10.115` on 2026-10-03; see below if it moved) |
 | Our screensaver | `com.fleece.screensaver` (DreamService `.BlackHoleDreamService`) |
 | Stock Android dream | `com.google.android.backdrop/.Backdrop` (Google photo/clock) |
 | Philips logo screensaver | `org.droidtv.tvsystemui` (`.logodreams.*`, a firmware overlay) |
@@ -35,6 +35,20 @@ below assume `adb` is on your PATH.
 ```bash
 adb connect 192.168.10.40:5555
 adb devices            # should list 192.168.10.40:5555  device
+```
+
+The TV's address is handed out by DHCP and has changed before. If `adb connect` times out,
+find the host listening on the adb port (Git Bash):
+
+```bash
+for i in $(seq 1 254); do ( timeout 2 bash -c "echo >/dev/tcp/192.168.10.$i/5555" 2>/dev/null && echo "open: 192.168.10.$i" ) & done; wait
+```
+
+To start the screensaver on demand instead of waiting for the idle timeout:
+
+```bash
+adb shell am start -n com.android.systemui/.Somnambulator   # "start now"
+adb shell input keyevent KEYCODE_WAKEUP                      # stop it
 ```
 
 ## What was done
@@ -142,8 +156,13 @@ python tools/moon_data.py <dir containing the two IMG files>
 ```
 
 They are stored uncompressed in the APK (`noCompress "bin"`) so the zoom scene can
-memory-map the 32 px/deg grid and read only the window it needs. Expect the APK to be
-~130 MB; `adb install` over Wi-Fi takes a minute.
+memory-map the 32 px/deg grid and read only the window it needs. The APK is ~160 MB;
+`adb install` over Wi-Fi takes about half a minute. The app declares `largeHeap` because the
+globe scenes briefly hold the 66 MB float height field in the Java heap while uploading it
+(the TV's normal heap limit is 192 MB).
+
+Verified on the TV on 2026-10-03: Mali-G51, OpenGL ES 3.2, the dream surface is 1920x1080
+(the panel upscales), all three scenes render without errors.
 
 The look is tuned in the browser first: `preview/moon.html` runs the *same* fragment shader
 (`app/src/main/assets/moon/moon.frag`) against the same data — see `preview/README.md`.

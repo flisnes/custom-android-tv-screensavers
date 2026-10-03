@@ -51,6 +51,7 @@ class MoonRenderer(private val context: Context, private val mode: Mode) : GLSur
     private val majorBright = if (mode == Mode.LIT) 1.0f else 0.8f
     private val glowBright = 0.9f
     private val glowLevels = 2.5f
+    private val riseLevels = 1.5f           // each line fades in while the sweep travels this many levels past it
     private val denseMax = 0.35f
     private val sweepSec = 30f
     private val holdSec = 5f
@@ -102,7 +103,7 @@ class MoonRenderer(private val context: Context, private val mode: Mode) : GLSur
 
     /** A prepared height field ready for upload, plus everything the sweep needs. */
     private class Field(
-        val w: Int, val h: Int, val data: FloatArray, val quant: FloatArray, val interval: Float,
+        val w: Int, val h: Int, var data: FloatArray?, val quant: FloatArray, val interval: Float,
         // zoom only
         val lat: Float = 0f, val lon: Float = 0f, val hh0: Float = 0f, val extract: FloatArray = FloatArray(4),
     )
@@ -158,7 +159,7 @@ class MoonRenderer(private val context: Context, private val mode: Mode) : GLSur
         // Swap in a freshly prepared field (first load, or the next zoom window after a fade).
         pending?.let { f ->
             if (current == null || phase == Phase.FADE && phaseT >= fadeSec) {
-                upload(f); current = f; pending = null
+                upload(f); f.data = null; current = f; pending = null
                 phase = Phase.SWEEP; phaseT = 0f; cycleT = 0f
             }
         }
@@ -207,6 +208,7 @@ class MoonRenderer(private val context: Context, private val mode: Mode) : GLSur
         set1f("uMinorBright", minorBright)
         set1f("uMajorBright", majorBright)
         set1f("uSweepH", sweepH)
+        set1f("uRiseRange", riseLevels * cur.interval)
         set1f("uGlowRange", glowLevels * cur.interval + 1e-3f)
         set1f("uGlowBright", glowBright)
         set1f("uDenseMax", denseMax)
@@ -257,27 +259,26 @@ class MoonRenderer(private val context: Context, private val mode: Mode) : GLSur
     /** Full-sphere height field for the globe modes (box-downsampled if the GPU can't take it). */
     private fun loadGlobe(): Field {
         val g = globeGrid
-        val raw = ShortArray(g.width * g.height)
+        val down = g.width > maxTex          // 2x2 box-downsample if the GPU can't take the full grid
+        val w = if (down) g.width / 2 else g.width
+        val h = if (down) g.height / 2 else g.height
+        val data = FloatArray(w * h)
         context.assets.open("moon/ldem_16.bin").use { ins ->
             val buf = ByteArray(g.width * 2)
+            val row = ShortArray(g.width)
             for (y in 0 until g.height) {
                 var off = 0
                 while (off < buf.size) { val n = ins.read(buf, off, buf.size - off); if (n < 0) error("short read"); off += n }
-                ByteBuffer.wrap(buf).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(raw, y * g.width, g.width)
+                ByteBuffer.wrap(buf).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(row)
+                if (!down) {
+                    val base = y * g.width
+                    for (x in 0 until g.width) data[base + x] = row[x] * scale
+                } else {
+                    val base = (y / 2) * w
+                    val k = 0.25f * scale
+                    for (x in 0 until w) data[base + x] += (row[2 * x] + row[2 * x + 1]) * k
+                }
             }
-        }
-        var w = g.width; var h = g.height
-        var data: FloatArray
-        if (w <= maxTex) {
-            data = FloatArray(w * h) { raw[it] * scale }
-        } else {
-            val W = w / 2; val H = h / 2
-            data = FloatArray(W * H)
-            for (y in 0 until H) for (x in 0 until W) {
-                val i = 2 * y * w + 2 * x
-                data[y * W + x] = (raw[i] + raw[i + 1] + raw[i + w] + raw[i + w + 1]) * 0.25f * scale
-            }
-            w = W; h = H
         }
         // Sweep quantiles, cos(lat)-weighted so the sweep advances by equal area.
         val r = java.util.Random(12345)
@@ -416,12 +417,13 @@ class MoonRenderer(private val context: Context, private val mode: Mode) : GLSur
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, if (mode == Mode.ZOOM) GLES30.GL_CLAMP_TO_EDGE else GLES30.GL_REPEAT)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
+        val data = f.data ?: return
         val rows = max(1, (4 shl 20) / (f.w * 4))     // ~4 MB per chunk
         val buf: FloatBuffer = GlUtil.directFloats(rows * f.w)
         var y = 0
         while (y < f.h) {
             val n = min(rows, f.h - y)
-            buf.clear(); buf.put(f.data, y * f.w, n * f.w); buf.flip()
+            buf.clear(); buf.put(data, y * f.w, n * f.w); buf.flip()
             GLES30.glTexSubImage2D(GLES30.GL_TEXTURE_2D, 0, 0, y, f.w, n, GLES30.GL_RED, GLES30.GL_FLOAT, buf)
             y += n
         }
@@ -453,7 +455,7 @@ class MoonRenderer(private val context: Context, private val mode: Mode) : GLSur
         private val NICE = floatArrayOf(10f, 20f, 25f, 50f, 75f, 100f, 150f, 200f, 250f, 300f, 400f, 500f, 600f, 800f, 1000f, 1500f, 2000f)
         private val UNIFORMS = listOf("uHeight", "uRes", "uMode", "uZoomCenter", "uZoomHalfH", "uExtract", "uSmooth", "uRotation",
             "uTilt", "uGlobeRadius", "uLightDir", "uLitSlope", "uLitSoft", "uLitAmbient", "uInterval", "uMajorEvery", "uLineWidth",
-            "uMajorWidth", "uMinorBright", "uMajorBright", "uSweepH", "uGlowRange", "uGlowBright", "uDenseMax", "uFade")
+            "uMajorWidth", "uMinorBright", "uMajorBright", "uSweepH", "uRiseRange", "uGlowRange", "uGlowBright", "uDenseMax", "uFade")
         private const val VS = """#version 300 es
 void main() {
   vec2 p = vec2(gl_VertexID == 1 ? 3.0 : -1.0, gl_VertexID == 2 ? 3.0 : -1.0);

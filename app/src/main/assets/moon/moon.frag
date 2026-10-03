@@ -31,6 +31,7 @@ uniform float uMajorWidth;   // major line width (px)
 uniform float uMinorBright;
 uniform float uMajorBright;
 uniform float uSweepH;       // metres: only levels at or below this are drawn
+uniform float uRiseRange;    // metres the sweep travels past a level while that line fades in (0 = instant)
 uniform float uGlowRange;    // metres below the sweep that still glow
 uniform float uGlowBright;   // extra brightness of freshly-swept lines
 uniform float uDenseMax;     // cap on the grey level where lines are too dense to resolve
@@ -77,13 +78,15 @@ float contours(float h, float lit) {
     float cov = clamp((0.5 * lw * w - g) / w + 0.5, 0.0, 1.0);
     float base = major ? uMajorBright : uMinorBright;
     float levelH = lvl * iv;
-    float vis = levelH <= uSweepH ? 1.0 : 0.0;
+    // A line fades in over uRiseRange metres of sweep travel after the sweep crosses its level (no hard pop),
+    // while the glow peaks just after it appears and then decays.
+    float vis = smoothstep(0.0, max(uRiseRange, 1e-3), uSweepH - levelH);
     float glow = uGlowBright * exp(-max(uSweepH - levelH, 0.0) / uGlowRange);
     float sparse = cov * vis * min(base + glow, 1.0);
 
     // Where lines are too dense to resolve (steep slopes, the globe's limb): box-filtered average instead of aliasing.
     float avgCov = min(uLineWidth * w, uDenseMax);
-    float visD = clamp((uSweepH - h) / (w * iv) + 0.5, 0.0, 1.0);
+    float visD = smoothstep(-0.5 * w * iv, max(w * iv, uRiseRange), uSweepH - h);
     float glowD = uGlowBright * exp(-max(uSweepH - h, 0.0) / uGlowRange);
     float dense = avgCov * visD * min(uMinorBright + glowD, 1.0);
 

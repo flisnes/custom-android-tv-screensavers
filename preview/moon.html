@@ -58,6 +58,7 @@ const SHARED = [
   ['majorBright', 0.8, 0, 1, 0.01],
   ['glowBright', 0.9, 0, 2, 0.05, 'extra brightness of freshly swept lines'],
   ['glowLevels', 2.5, 0, 10, 0.25, 'glow fades over this many levels'],
+  ['riseLevels', 1.5, 0, 6, 0.1, 'each line fades in while the sweep travels this many levels past it'],
   ['denseMax', 0.35, 0, 1, 0.05, 'grey cap where lines merge'],
   ['sweepSec', 30, 3, 120, 1, 'min to max sweep duration'],
   ['holdSec', 5, 0, 30, 0.5],
@@ -126,7 +127,7 @@ if (!gl) status('WebGL2 not available');
 let prog, uni = {}, data = {}, tex = {}, quant = {};
 const unis = ['uHeight','uRes','uMode','uZoomCenter','uZoomHalfH','uExtract','uSmooth','uRotation','uTilt','uGlobeRadius',
   'uLightDir','uLitSlope','uLitSoft','uLitAmbient','uInterval','uMajorEvery','uLineWidth','uMajorWidth','uMinorBright',
-  'uMajorBright','uSweepH','uGlowRange','uGlowBright','uDenseMax','uFade'];
+  'uMajorBright','uSweepH','uRiseRange','uGlowRange','uGlowBright','uDenseMax','uFade'];
 
 async function fetchBuf(url, label) {
   status('loading ' + label + '…');
@@ -324,6 +325,7 @@ function frame(now) {
   gl.uniform1f(uni.uMinorBright, v.minorBright);
   gl.uniform1f(uni.uMajorBright, v.majorBright);
   gl.uniform1f(uni.uSweepH, st.sweepH);
+  gl.uniform1f(uni.uRiseRange, v.riseLevels * interval);
   gl.uniform1f(uni.uGlowRange, v.glowLevels * interval + 1e-3);
   gl.uniform1f(uni.uGlowBright, v.glowBright);
   gl.uniform1f(uni.uDenseMax, v.denseMax);
