@@ -40,5 +40,5 @@ android {
 }
 
 dependencies {
-    // The dream is a framework WebView hosting a local HTML asset — no extra libraries needed.
+    // Framework-only: GL renderers plus plain android.widget UI, no extra libraries needed.
 }

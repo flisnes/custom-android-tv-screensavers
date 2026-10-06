@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Gives the system screensaver picker a settings entry that opens the scene list. -->
+<dream xmlns:android="http://schemas.android.com/apk/res/android"
+    android:settingsActivity="com.fleece.screensaver.SettingsActivity" />

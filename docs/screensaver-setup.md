@@ -116,17 +116,29 @@ On-screen equivalent (does the same thing): **Settings → System → Storage �
 Internal shared storage → Apps → Special app access → Display over other apps →**
 turn **off** "Tv System UI".
 
-### 4b. Scenes (random rotation)
+### 4b. Scenes (random rotation) and the Fleece Screensavers app
 
 The dream picks a **random scene** each time it activates (Android allows only one
-registered screensaver, so rotation happens inside the app). Scene indices:
-`0` black hole, `1` flow field, `2` wheat field, `3` murmuration, `4` vortex ocean,
-`5` galaxy, `6` ink in water, `7` embers, `8` moon zoom contours, `9` moon globe
-contours, `10` moon lit globe. The random pool is black hole, flow field, embers and the
-three moon scenes (`0 1 7 8 9 10`); wheat field (`2`), murmuration (`3`), vortex ocean (`4`),
-galaxy (`5`) and ink (`6`) are kept in the app but only shown when pinned via the override
-below. (Starry waves, aurora, and grass field were removed; note the indices shifted, so any
-previously pinned `fleece_scene` value may now point at a different scene.)
+registered screensaver, so rotation happens inside the app). Which scenes are in the
+rotation is chosen in the **Fleece Screensavers** app on the TV home screen (also reachable
+from the settings entry of the screensaver picker). Each scene has a checkbox and a
+**Preview** button that runs it full screen until Back is pressed. The choice is stored in
+the app's preferences and read on the next activation; at least one scene must stay
+checked, and **Reset to defaults** restores the default set. The default set is black hole,
+flow field, embers and the three moon scenes; wheat field, murmuration, vortex ocean,
+galaxy and ink start unchecked. The scene list lives in `SceneCatalog.kt`.
+
+Each activation logs its choice, which is handy when checking the rotation:
+
+```bash
+adb -s 192.168.10.115:5555 logcat -s FleeceDream:I   # "scene moon_globe", ...
+```
+
+Scene indices for the adb override below: `0` black hole, `1` flow field, `2` wheat field,
+`3` murmuration, `4` vortex ocean, `5` galaxy, `6` ink in water, `7` embers, `8` moon zoom
+contours, `9` moon globe contours, `10` moon lit globe. The override pins a scene even if it
+is unchecked in the app. (Starry waves, aurora, and grass field were removed earlier; the
+indices shifted then, so an old pinned `fleece_scene` value may point at a different scene.)
 To pin one (testing or preference):
 
 ```bash
