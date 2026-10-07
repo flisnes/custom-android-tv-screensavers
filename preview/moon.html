@@ -127,7 +127,8 @@ if (!gl) status('WebGL2 not available');
 let prog, uni = {}, data = {}, tex = {}, quant = {};
 const unis = ['uHeight','uRes','uMode','uZoomCenter','uZoomHalfH','uExtract','uSmooth','uRotation','uTilt','uGlobeRadius',
   'uLightDir','uLitSlope','uLitSoft','uLitAmbient','uInterval','uMajorEvery','uLineWidth','uMajorWidth','uMinorBright',
-  'uMajorBright','uSweepH','uRiseRange','uGlowRange','uGlowBright','uDenseMax','uFade'];
+  'uMajorBright','uSweepH','uRiseRange','uGlowRange','uGlowBright','uDenseMax','uFade',
+  'uSweepDir','uHRange','uTint','uLowDim'];
 
 async function fetchBuf(url, label) {
   status('loading ' + label + '…');
@@ -330,6 +331,8 @@ function frame(now) {
   gl.uniform1f(uni.uGlowBright, v.glowBright);
   gl.uniform1f(uni.uDenseMax, v.denseMax);
   gl.uniform1f(uni.uFade, st.fade);
+  // Height cues and sweep direction are tuned on the TV (tweak panel); neutral here.
+  gl.uniform1f(uni.uSweepDir, 1); gl.uniform2f(uni.uHRange, 0, 1); gl.uniform1f(uni.uTint, 0); gl.uniform1f(uni.uLowDim, 0);
   if (sc.mode === 0) {
     const z = 1 - v.driftZoom * st.progress;
     const ang = win.lon * 7.0 + win.lat * 3.0;     // per-window pan direction

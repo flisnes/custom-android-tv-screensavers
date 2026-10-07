@@ -22,11 +22,13 @@ import android.widget.Toast
 /**
  * TV launcher entry ("Fleece Screensavers") and the dream's settings screen: a D-pad friendly list of
  * every scene with a checkbox for the random rotation and a Preview button that runs the scene
- * full screen. Choices are stored in [ScenePrefs] and read by the dream on its next activation.
+ * full screen (where its parameters can be tweaked, see [PreviewActivity]). Choices are stored in [ScenePrefs] and read by the dream on its next activation.
  */
 class SettingsActivity : Activity() {
 
     private lateinit var prefs: ScenePrefs
+    private lateinit var tweakStore: TweakStore
+    private val tweakNotes = mutableMapOf<String, TextView>()
     private lateinit var summary: TextView
     private val checks = mutableMapOf<String, CheckBox>()
     private var firstRow: View? = null
@@ -34,6 +36,7 @@ class SettingsActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = ScenePrefs(this)
+        tweakStore = TweakStore(this)
 
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -83,6 +86,7 @@ class SettingsActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             addView(text(scene.title, 20f, Color.WHITE))
             addView(text(scene.description, 14f, GREY))
+            addView(text("", 14f, AMBER).also { tweakNotes[scene.key] = it })
         }
         val toggle = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -98,7 +102,7 @@ class SettingsActivity : Activity() {
         if (firstRow == null) firstRow = toggle
         row.addView(toggle, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
 
-        row.addView(button("Preview") {
+        row.addView(button("Preview / tweak") {
             startActivity(Intent(this, PreviewActivity::class.java).putExtra(PreviewActivity.EXTRA_SCENE, scene.key))
         }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = dp(16) })
 
@@ -119,6 +123,13 @@ class SettingsActivity : Activity() {
     private fun refresh() {
         val keys = prefs.enabledKeys()
         checks.forEach { (key, box) -> box.isChecked = key in keys }
+        SceneCatalog.scenes.forEach { scene ->
+            val n = tweakStore.changedCount(scene)
+            tweakNotes[scene.key]?.apply {
+                text = if (n == 1) "1 tweaked setting" else "$n tweaked settings"
+                visibility = if (n > 0) View.VISIBLE else View.GONE
+            }
+        }
         val n = SceneCatalog.scenes.count { it.key in keys }
         summary.text = "$n of ${SceneCatalog.scenes.size} scenes in the random rotation. " +
             "Changes apply the next time the screensaver starts."
@@ -159,5 +170,6 @@ class SettingsActivity : Activity() {
 
     private companion object {
         const val GREY = 0xFFAAAAAA.toInt()
+        const val AMBER = 0xFFFFB74D.toInt()
     }
 }

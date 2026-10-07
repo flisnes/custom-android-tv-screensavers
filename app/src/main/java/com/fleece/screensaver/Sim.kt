@@ -13,6 +13,11 @@ class Sim(val n: Int = 2800) {
     val x = FloatArray(n); val y = FloatArray(n); val z = FloatArray(n)
     val vx = FloatArray(n); val vy = FloatArray(n); val vz = FloatArray(n)
 
+    /** Fraction of respawns that refill the disk (vs. inclined infall); tweakable. */
+    var diskRespawn = DISK_RESPAWN
+    /** Inward accretion rate of disk matter; tweakable. */
+    var drain = diskDrain
+
     private val tmpDir = FloatArray(3)
     private val tmpAxis = FloatArray(3)
     private val tmpT = FloatArray(3)
@@ -62,7 +67,7 @@ class Sim(val n: Int = 2800) {
         // Most respawns refill the bright accretion disk (near-circular, in-plane) so it stays
         // populated; the rest come back as inclined sub-circular infallers for plunge streams.
         // Without this the disk drains into the hole faster than it's replenished and empties out.
-        if (Math.random().toFloat() < DISK_RESPAWN) {
+        if (Math.random().toFloat() < diskRespawn) {
             seedDisk(i)
             return
         }
@@ -89,7 +94,7 @@ class Sim(val n: Int = 2800) {
             vz[i] *= (1f - planeDmp * f)
             // gentle accretion: DISK MATTER ONLY (never a global drag)
             if (pz * pz < 0.0036f && r < R_out) {
-                val d = 1f - diskDrain * dt
+                val d = 1f - drain * dt
                 vx[i] *= d; vy[i] *= d; vz[i] *= d
             }
             x[i] = px + vx[i] * dt; y[i] = py + vy[i] * dt; z[i] = pz + vz[i] * dt

@@ -13,27 +13,36 @@ class SceneInfo(
     val description: String,
     val glVersion: Int = 2,
     val defaultEnabled: Boolean = true,
-    val make: (Context) -> GLSurfaceView.Renderer,
-)
+    /** Tweakable parameters (see [SceneParams]); [SceneParams.common] is appended automatically. */
+    params: List<Param> = emptyList(),
+    val make: (Context, Tweaks) -> GLSurfaceView.Renderer,
+) {
+    val params: List<Param> = params + SceneParams.common
+}
 
 object SceneCatalog {
     val scenes: List<SceneInfo> = listOf(
-        SceneInfo("black_hole", "Black hole", "Glowing particles swirling into a black hole") { BlackHoleRenderer() },
-        SceneInfo("flow_field", "Flow field", "Particles drifting along a slowly evolving current, leaving aurora-like ribbons") { FlowFieldRenderer() },
-        SceneInfo("wheat_field", "Wheat field", "Gusts of wind travelling across a golden wheat field", defaultEnabled = false) { WheatFieldRenderer() },
-        SceneInfo("murmuration", "Murmuration", "A flock of starlings folding around a wandering attractor (boids)", defaultEnabled = false) { MurmurationRenderer() },
-        SceneInfo("vortex_ocean", "Vortex ocean", "Glowing spirals around drifting whirlpools that fade and reverse", defaultEnabled = false) { VortexRenderer() },
-        SceneInfo("galaxy", "Galaxy", "A tilted spiral galaxy turning slowly", defaultEnabled = false) { GalaxyRenderer() },
-        SceneInfo("ink", "Ink in water", "Coloured ink drops bursting and dispersing in water", defaultEnabled = false) { InkRenderer() },
-        SceneInfo("embers", "Embers", "Sparks rising from an unseen fire") { EmbersRenderer() },
-        SceneInfo("moon_zoom", "Moon close-up", "Contour sweep over a random patch of the Moon", glVersion = 3) {
-            MoonRenderer(it, MoonRenderer.Mode.ZOOM)
+        SceneInfo("black_hole", "Black hole", "Glowing particles swirling into a black hole",
+            params = SceneParams.blackHole) { _, t -> BlackHoleRenderer(t) },
+        SceneInfo("flow_field", "Flow field", "Particles drifting along a slowly evolving current, leaving aurora-like ribbons",
+            params = SceneParams.flowField) { _, t -> FlowFieldRenderer(t) },
+        SceneInfo("wheat_field", "Wheat field", "Gusts of wind travelling across a golden wheat field", defaultEnabled = false) { _, _ -> WheatFieldRenderer() },
+        SceneInfo("murmuration", "Murmuration", "A flock of starlings folding around a wandering attractor (boids)", defaultEnabled = false) { _, _ -> MurmurationRenderer() },
+        SceneInfo("vortex_ocean", "Vortex ocean", "Glowing spirals around drifting whirlpools that fade and reverse", defaultEnabled = false) { _, _ -> VortexRenderer() },
+        SceneInfo("galaxy", "Galaxy", "A tilted spiral galaxy turning slowly", defaultEnabled = false) { _, _ -> GalaxyRenderer() },
+        SceneInfo("ink", "Ink in water", "Coloured ink drops bursting and dispersing in water", defaultEnabled = false) { _, _ -> InkRenderer() },
+        SceneInfo("embers", "Embers", "Sparks rising from an unseen fire") { _, _ -> EmbersRenderer() },
+        SceneInfo("moon_zoom", "Moon close-up", "Contour sweep over a random patch of the Moon", glVersion = 3,
+            params = SceneParams.moon(MoonRenderer.Mode.ZOOM)) { c, t ->
+            MoonRenderer(c, MoonRenderer.Mode.ZOOM, t)
         },
-        SceneInfo("moon_globe", "Moon globe", "Spinning Moon with a continuous contour sweep", glVersion = 3) {
-            MoonRenderer(it, MoonRenderer.Mode.GLOBE)
+        SceneInfo("moon_globe", "Moon globe", "Spinning Moon with a continuous contour sweep", glVersion = 3,
+            params = SceneParams.moon(MoonRenderer.Mode.GLOBE)) { c, t ->
+            MoonRenderer(c, MoonRenderer.Mode.GLOBE, t)
         },
-        SceneInfo("moon_lit", "Lit Moon globe", "Spinning Moon, only contours facing the light are drawn", glVersion = 3) {
-            MoonRenderer(it, MoonRenderer.Mode.LIT)
+        SceneInfo("moon_lit", "Lit Moon globe", "Spinning Moon, only contours facing the light are drawn", glVersion = 3,
+            params = SceneParams.moon(MoonRenderer.Mode.LIT)) { c, t ->
+            MoonRenderer(c, MoonRenderer.Mode.LIT, t)
         },
     )
 

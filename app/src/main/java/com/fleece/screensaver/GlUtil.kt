@@ -119,14 +119,24 @@ class TrailFbo {
             GLES20.GL_TEXTURE_2D, tex, 0)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
-        // black fade quad at the requested alpha
+        fade = -1f
+        setFade(fadeAlpha)
+        val c = floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)
+        subQuad.clear()
+        for (k in 0 until 4) { subQuad.put(c[k * 2]).put(c[k * 2 + 1]).put(SUB).put(SUB).put(SUB).put(1f) }
+        subQuad.position(0)
+    }
+
+    private var fade = -1f
+
+    /** Per-frame fade toward black (lower = longer trails); cheap to call every frame. */
+    fun setFade(fadeAlpha: Float) {
+        if (fadeAlpha == fade) return
+        fade = fadeAlpha
         fadeQuad.clear()
         val c = floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)
         for (k in 0 until 4) { fadeQuad.put(c[k * 2]).put(c[k * 2 + 1]).put(0f).put(0f).put(0f).put(fadeAlpha) }
         fadeQuad.position(0)
-        subQuad.clear()
-        for (k in 0 until 4) { subQuad.put(c[k * 2]).put(c[k * 2 + 1]).put(SUB).put(SUB).put(SUB).put(1f) }
-        subQuad.position(0)
     }
 
     /** Bind the accumulation buffer and fade the previous frame toward black (call at frame start). */

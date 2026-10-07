@@ -29,7 +29,8 @@ import kotlin.math.sqrt
 /**
  * Topographic contour maps of the Moon (white lines on black), from the LRO LOLA height model in
  * assets/moon (see tools/moon_data.py). Three modes share one fragment shader (assets/moon/moon.frag,
- * also used verbatim by preview/moon.html — tune the numbers there and copy them here):
+ * also used verbatim by preview/moon.html). All look and timing values are live [Tweaks] (defaults in
+ * [SceneParams.moon]), adjusted from the preview's tweak panel on the TV:
  *
  *  ZOOM  — a random window of the surface; a sweep rises from the lowest to the highest point and
  *          draws each contour as it passes, holds, fades out, and picks a new window.
@@ -39,50 +40,18 @@ import kotlin.math.sqrt
  *
  * Requires a GL ES 3.0 context (R16F height textures, `#version 300 es`).
  */
-class MoonRenderer(private val context: Context, private val mode: Mode) : GLSurfaceView.Renderer {
+class MoonRenderer(
+    private val context: Context,
+    private val mode: Mode,
+    private val tweaks: Tweaks,
+) : GLSurfaceView.Renderer, SceneStatus {
 
     enum class Mode(val id: Int) { ZOOM(0), GLOBE(1), LIT(2) }
 
-    // ---- tunables (defaults mirror preview/moon.html) ------------------------------------------
-    private val lineWidth = 1.4f
-    private val majorWidth = 2.2f
-    private val majorEvery = 5f
-    private val minorBright = if (mode == Mode.LIT) 0.7f else 0.45f   // lit mode shows far fewer segments
-    private val majorBright = if (mode == Mode.LIT) 1.0f else 0.8f
-    private val glowBright = 0.9f
-    private val glowLevels = 2.5f
-    private val riseLevels = 1.5f           // each line fades in while the sweep travels this many levels past it
-    private val denseMax = 0.35f
-    private val sweepSec = 30f
-    private val holdSec = 5f
-    private val fadeSec = 2.5f
-    private val ease = 0.6f
-
-    // zoom
-    private val autoDensity = 0.3f          // levels per screen px at the 80th-percentile slope
-    private val minInterval = 50f
-    private val windowBlur = 0.8f           // gaussian sigma in source px
-    private val halfHeightMinDeg = 5f
-    private val halfHeightMaxDeg = 9f
+    // ---- fixed settings (everything adjustable is in [tweaks], see SceneParams.moon) ---------------
     private val latMaxDeg = 52f
-    private val driftZoom = 0.08f
-    private val driftPan = 0.03f
     private val pickBest = 3
-
-    // globe / lit
-    private val globeInterval = 2000f
-    private val litInterval = 800f
-    private val globeRadius = 0.86f
-    private val revSec = if (mode == Mode.LIT) 420f else 360f
-    private val tiltDeg = 18f
-    private val tiltWobbleDeg = 12f
     private val wobbleSec = 600f
-    private val lightAzDeg = -45f
-    private val lightElDeg = 55f
-    private val litSlope = 0.03f
-    private val litSoft = 0.3f
-    private val litAmbient = 0.04f
-    private val litSweep = false
 
     // ---- GL state -------------------------------------------------------------------------------
     private var prog = 0
@@ -103,10 +72,14 @@ class MoonRenderer(private val context: Context, private val mode: Mode) : GLSur
 
     /** A prepared height field ready for upload, plus everything the sweep needs. */
     private class Field(
-        val w: Int, val h: Int, var data: FloatArray?, val quant: FloatArray, val interval: Float,
-        // zoom only
+        val w: Int, val h: Int, var data: FloatArray?, val quant: FloatArray,
+        // zoom only: metres of rise per screen px at the 80th-percentile slope (sets the contour interval)
+        val gradRef: Float = 0f,
         val lat: Float = 0f, val lon: Float = 0f, val hh0: Float = 0f, val extract: FloatArray = FloatArray(4),
-    )
+    ) {
+        val lo = quant.first()
+        val hi = quant.last()
+    }
     @Volatile private var pending: Field? = null
     @Volatile private var loading = false
     private var current: Field? = null
@@ -119,6 +92,27 @@ class MoonRenderer(private val context: Context, private val mode: Mode) : GLSur
     private var simT = 0f
     private var lastNanos = 0L
     private val rnd = java.util.Random()
+    private var lastSweepH = Float.NaN
+
+    // ---- readout for the preview's info overlay (written on the GL thread) -------------------------
+    @Volatile private var stPhase = ""
+    @Volatile private var stProgress = 0f
+    @Volatile private var stSweepH = 0f
+    @Volatile private var stLo = 0f
+    @Volatile private var stHi = 0f
+    @Volatile private var stInterval = 1f
+    @Volatile private var stRate = 0f        // metres per second, smoothed
+
+    override fun status(): String {
+        if (stPhase.isEmpty()) return "loading height data…"
+        val iv = stInterval
+        val sweep = if (stPhase == "SWEEP") "%+.0f m".format(stSweepH) else "complete"
+        val speed = if (stPhase == "SWEEP" && stRate > 0f)
+            "%.0f m/s · a new line every %.1f s".format(stRate, iv / stRate) else "—"
+        return "$stPhase ${(stProgress * 100).toInt()}% · sweep $sweep\n" +
+            "elevation %+.0f … %+.0f m · interval %.0f m (%d levels)\n".format(stLo, stHi, iv, ((stHi - stLo) / iv).toInt()) +
+            "sweep speed: $speed"
+    }
 
     // =============================================================================================
 
@@ -136,7 +130,7 @@ class MoonRenderer(private val context: Context, private val mode: Mode) : GLSur
 
         readManifest()
         current = null; pending = null; loading = false
-        phase = Phase.SWEEP; phaseT = 0f; cycleT = 0f; simT = 0f; lastNanos = 0L
+        phase = Phase.SWEEP; phaseT = 0f; cycleT = 0f; simT = 0f; lastNanos = 0L; rotation = 0f
         if (mode == Mode.ZOOM) {
             // Window extraction needs the viewport aspect; kicked off from onSurfaceChanged.
         } else {
@@ -166,7 +160,11 @@ class MoonRenderer(private val context: Context, private val mode: Mode) : GLSur
         val cur = current
         if (cur == null) { GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT); return }
 
-        val sweepOn = mode != Mode.LIT || litSweep
+        val t = tweaks
+        val sweepSec = t["sweepSec"]; val holdSec = t["holdSec"]
+        val interval = intervalFor(cur)
+        val down = t.int("direction") == 1          // sweep from the highest point down
+        val sweepOn = mode != Mode.LIT || t.bool("litSweep")
         var sweepH = 1e9f
         var fade = min(1f, simT / 2f)
         var progress = 0f
@@ -183,9 +181,13 @@ class MoonRenderer(private val context: Context, private val mode: Mode) : GLSur
                     else phaseT = fadeSec   // stay black until the next window is ready
                 }
             }
-            var p = if (phase == Phase.SWEEP) phaseT / sweepSec else 1f
-            val e = p * p * (3f - 2f * p); p += (e - p) * ease
-            sweepH = if (p >= 1f) 1e9f else quantile(cur.quant, p)
+            var p = if (phase == Phase.SWEEP) min(phaseT / sweepSec, 1f) else 1f
+            val e = p * p * (3f - 2f * p); p += (e - p) * t["ease"]
+            val q = if (down) 1f - p else p
+            // Pacing: 0 = equal surface area per second (quantiles), 1 = equal metres per second (steady line rate).
+            val byArea = quantile(cur.quant, q)
+            val byHeight = cur.lo + (cur.hi - cur.lo) * q
+            sweepH = if (p >= 1f) (if (down) -1e9f else 1e9f) else byArea + (byHeight - byArea) * t["pacing"]
             fade = when (phase) {
                 Phase.FADE -> max(0f, 1f - phaseT / fadeSec)
                 Phase.SWEEP -> min(1f, phaseT / 1f)
@@ -193,6 +195,7 @@ class MoonRenderer(private val context: Context, private val mode: Mode) : GLSur
             }
             progress = min(cycleT / (sweepSec + holdSec + fadeSec), 1f)
         }
+        updateStatus(cur, sweepOn, sweepH, interval, progress, dt)
 
         GLES30.glUseProgram(prog)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
@@ -201,37 +204,60 @@ class MoonRenderer(private val context: Context, private val mode: Mode) : GLSur
         GLES30.glUniform2f(u["uRes"]!!, vw.toFloat(), vh.toFloat())
         set1i("uMode", mode.id)
         set1i("uSmooth", 1)
-        set1f("uInterval", cur.interval)
-        set1f("uMajorEvery", majorEvery)
-        set1f("uLineWidth", lineWidth * pxScale())
-        set1f("uMajorWidth", majorWidth * pxScale())
-        set1f("uMinorBright", minorBright)
-        set1f("uMajorBright", majorBright)
+        set1f("uInterval", interval)
+        set1f("uMajorEvery", t["majorEvery"])
+        set1f("uLineWidth", t["lineWidth"] * pxScale())
+        set1f("uMajorWidth", t["majorWidth"] * pxScale())
+        set1f("uMinorBright", t["minorBright"])
+        set1f("uMajorBright", t["majorBright"])
         set1f("uSweepH", sweepH)
-        set1f("uRiseRange", riseLevels * cur.interval)
-        set1f("uGlowRange", glowLevels * cur.interval + 1e-3f)
-        set1f("uGlowBright", glowBright)
-        set1f("uDenseMax", denseMax)
+        set1f("uSweepDir", if (down) -1f else 1f)
+        set1f("uRiseRange", t["riseLevels"] * interval)
+        set1f("uGlowRange", t["glowLevels"] * interval + 1e-3f)
+        set1f("uGlowBright", t["glowBright"])
+        set1f("uDenseMax", t["denseMax"])
         set1f("uFade", fade)
+        GLES30.glUniform2f(u["uHRange"]!!, quantile(cur.quant, 0.005f), quantile(cur.quant, 0.995f))
+        set1f("uTint", t["tint"])
+        set1f("uLowDim", t["lowDim"])
 
         if (mode == Mode.ZOOM) {
-            val z = 1f - driftZoom * progress
+            val z = 1f - t["driftZoom"] * progress
             val ang = cur.lon * 7f + cur.lat * 3f
-            val pan = driftPan * (progress - 0.5f) * cur.hh0 * 2f
+            val pan = t["driftPan"] * (progress - 0.5f) * cur.hh0 * 2f
             GLES30.glUniform2f(u["uZoomCenter"]!!, cur.lat + sin(ang) * pan, cur.lon + cos(ang) * pan / cos(cur.lat))
             set1f("uZoomHalfH", cur.hh0 * z)
             GLES30.glUniform4f(u["uExtract"]!!, cur.extract[0], cur.extract[1], cur.extract[2], cur.extract[3])
         } else {
-            set1f("uRotation", simT * 2f * PI.toFloat() / revSec)
-            set1f("uTilt", (tiltDeg + tiltWobbleDeg * sin(simT * 2f * PI.toFloat() / wobbleSec)) * DEG)
-            set1f("uGlobeRadius", globeRadius)
+            rotation += dt * 2f * PI.toFloat() / t["revSec"]
+            set1f("uRotation", rotation)
+            set1f("uTilt", (t["tiltDeg"] + t["tiltWobbleDeg"] * sin(simT * 2f * PI.toFloat() / wobbleSec)) * DEG)
+            set1f("uGlobeRadius", t["globeRadius"])
             if (mode == Mode.LIT) {
-                val az = lightAzDeg * DEG; val el = lightElDeg * DEG
+                val az = t["lightAzDeg"] * DEG; val el = t["lightElDeg"] * DEG
                 GLES30.glUniform3f(u["uLightDir"]!!, sin(az) * cos(el), cos(az) * cos(el), sin(el))
-                set1f("uLitSlope", litSlope); set1f("uLitSoft", litSoft); set1f("uLitAmbient", litAmbient)
+                set1f("uLitSlope", t["litSlope"]); set1f("uLitSoft", t["litSoft"]); set1f("uLitAmbient", t["litAmbient"])
             }
         }
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
+    }
+
+    private var rotation = 0f
+    private val fadeSec get() = tweaks["fadeSec"]
+
+    private fun intervalFor(f: Field): Float =
+        if (mode == Mode.ZOOM) max(tweaks["minInterval"], niceInterval(f.gradRef / tweaks["autoDensity"]))
+        else tweaks["interval"]
+
+    private fun updateStatus(cur: Field, sweepOn: Boolean, sweepH: Float, interval: Float, progress: Float, dt: Float) {
+        val sweeping = sweepOn && phase == Phase.SWEEP && abs(sweepH) < 1e8f
+        if (sweeping && !lastSweepH.isNaN() && dt > 0f) {
+            val r = abs(sweepH - lastSweepH) / dt
+            stRate += (r - stRate) * min(1f, dt * 2f)       // ~0.5 s smoothing
+        }
+        lastSweepH = if (sweeping) sweepH else Float.NaN
+        stPhase = if (!sweepOn) "STATIC" else phase.name
+        stProgress = progress; stSweepH = sweepH; stLo = cur.lo; stHi = cur.hi; stInterval = interval
     }
 
     /** Line widths are specified for a 1080p-class canvas; scale them with the actual surface. */
@@ -291,7 +317,7 @@ class MoonRenderer(private val context: Context, private val mode: Mode) : GLSur
             q[k++] = data[y * w + x]
         }
         q.sort()
-        return Field(w, h, data, q, if (mode == Mode.LIT) litInterval else globeInterval)
+        return Field(w, h, data, q)
     }
 
     private fun mapZoom(): ShortBuffer {
@@ -327,7 +353,8 @@ class MoonRenderer(private val context: Context, private val mode: Mode) : GLSur
         var best: Field? = null
         var bestRough = -1f
         repeat(pickBest) {
-            val hhDeg = halfHeightMinDeg + rnd.nextFloat() * (halfHeightMaxDeg - halfHeightMinDeg)
+            val a = tweaks["windowMinDeg"]; val b = max(a, tweaks["windowMaxDeg"])
+            val hhDeg = a + rnd.nextFloat() * (b - a)
             val latDeg = (rnd.nextFloat() * 2f - 1f) * latMaxDeg
             val lonDeg = rnd.nextFloat() * 360f
             val (f, rough) = extractWindow(src, latDeg, lonDeg, hhDeg, aspect)
@@ -338,7 +365,7 @@ class MoonRenderer(private val context: Context, private val mode: Mode) : GLSur
 
     private fun extractWindow(src: ShortBuffer, latDeg: Float, lonDeg: Float, hhDeg: Float, aspect: Float): Pair<Field, Float> {
         val m = zoomGrid
-        val margin = 1f + driftPan * 2f + 0.04f
+        val margin = 1f + tweaks.param("driftPan").max * 2f + 0.04f   // room for the largest pan setting
         val hh = hhDeg * DEG * margin
         val latTop = min(latDeg * DEG + hh, m.latMax * DEG); val latBot = max(latDeg * DEG - hh, m.latMin * DEG)
         val cosMin = min(cos(latTop), cos(latBot))
@@ -361,7 +388,8 @@ class MoonRenderer(private val context: Context, private val mode: Mode) : GLSur
         }
         val n = w * h; val mean = sum / n
         val rough = sqrt(max(sum2 / n - mean * mean, 0.0)).toFloat()
-        if (windowBlur > 0f) data = gaussianBlur(data, w, h, windowBlur)
+        val blur = tweaks["windowBlur"]
+        if (blur > 0f) data = gaussianBlur(data, w, h, blur)
 
         // Sweep quantiles and slope percentile over the on-screen (central) part only.
         val r = java.util.Random(777)
@@ -375,9 +403,9 @@ class MoonRenderer(private val context: Context, private val mode: Mode) : GLSur
         }
         q.sort(); gr.sort()
         val screenPxPerSrcPx = vh / (2f * hhDeg * DEG * pxPerRad)
-        val interval = max(minInterval, niceInterval(gr[(gr.size * 0.8f).toInt()] / screenPxPerSrcPx / autoDensity))
+        val gradRef = gr[(gr.size * 0.8f).toInt()] / screenPxPerSrcPx
         val extract = floatArrayOf(col0 / pxPerRad, m.latMax * DEG - row0 / pxPerRad, w / pxPerRad, h / pxPerRad)
-        return Field(w, h, data, q, interval, latDeg * DEG, lonDeg * DEG, hhDeg * DEG, extract) to rough
+        return Field(w, h, data, q, gradRef, latDeg * DEG, lonDeg * DEG, hhDeg * DEG, extract) to rough
     }
 
     private fun quantile(q: FloatArray, p: Float): Float = q[max(0, min(q.size - 1, (p * (q.size - 1)).toInt()))]
@@ -455,7 +483,8 @@ class MoonRenderer(private val context: Context, private val mode: Mode) : GLSur
         private val NICE = floatArrayOf(10f, 20f, 25f, 50f, 75f, 100f, 150f, 200f, 250f, 300f, 400f, 500f, 600f, 800f, 1000f, 1500f, 2000f)
         private val UNIFORMS = listOf("uHeight", "uRes", "uMode", "uZoomCenter", "uZoomHalfH", "uExtract", "uSmooth", "uRotation",
             "uTilt", "uGlobeRadius", "uLightDir", "uLitSlope", "uLitSoft", "uLitAmbient", "uInterval", "uMajorEvery", "uLineWidth",
-            "uMajorWidth", "uMinorBright", "uMajorBright", "uSweepH", "uRiseRange", "uGlowRange", "uGlowBright", "uDenseMax", "uFade")
+            "uMajorWidth", "uMinorBright", "uMajorBright", "uSweepH", "uRiseRange", "uGlowRange", "uGlowBright", "uDenseMax", "uFade",
+            "uSweepDir", "uHRange", "uTint", "uLowDim")
         private const val VS = """#version 300 es
 void main() {
   vec2 p = vec2(gl_VertexID == 1 ? 3.0 : -1.0, gl_VertexID == 2 ? 3.0 : -1.0);

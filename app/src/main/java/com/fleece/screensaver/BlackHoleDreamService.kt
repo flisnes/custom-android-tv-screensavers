@@ -31,13 +31,15 @@ class BlackHoleDreamService : DreamService() {
         super.onAttachedToWindow()
         isInteractive = false
         isFullscreen = true
-        // Dim the OLED panel while dreaming (burn-in mitigation).
-        window?.let { w -> w.attributes = w.attributes.apply { screenBrightness = 0.45f } }
-
         val scene = chooseScene()
+        val tweaks = TweakStore(this).load(scene)
+        Log.i("FleeceDream", "tweaks ${scene.key}: ${tweaks.describeChanged()}")
+        // Dim the OLED panel while dreaming (burn-in mitigation); 0.45 unless tweaked.
+        window?.let { w -> w.attributes = w.attributes.apply { screenBrightness = tweaks["panelBrightness"] } }
+
         val view = GLSurfaceView(this).apply {
             setEGLContextClientVersion(scene.glVersion)
-            setRenderer(scene.make(this@BlackHoleDreamService))
+            setRenderer(scene.make(this@BlackHoleDreamService, tweaks))
             renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
         }
         glView = view

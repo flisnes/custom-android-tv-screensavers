@@ -128,10 +128,27 @@ checked, and **Reset to defaults** restores the default set. The default set is 
 flow field, embers and the three moon scenes; wheat field, murmuration, vortex ocean,
 galaxy and ink start unchecked. The scene list lives in `SceneCatalog.kt`.
 
-Each activation logs its choice, which is handy when checking the rotation:
+Each activation logs its choice and any tweaked values, which is handy when checking the rotation:
 
 ```bash
-adb -s 192.168.10.115:5555 logcat -s FleeceDream:I   # "scene moon_globe", ...
+adb -s 192.168.10.115:5555 logcat -s FleeceDream:I   # "scene moon_globe", "tweaks moon_globe: sweepSec=45 tint=0.8"
+```
+
+**Tweaking a scene.** In a scene's preview (**Preview / tweak**), **OK** opens a panel of that
+scene's parameters: Up/Down picks one, Left/Right changes it live (hold to speed up), OK resets
+it, Back closes the panel. Changed values are shown in amber, saved at once, and used by the
+screensaver from its next start; the scene list shows how many settings each scene has tweaked.
+**Up** (panel closed) toggles an info overlay: frame rate and slowest frame, plus for the moon
+scenes the sweep phase, current sweep height, elevation range, contour interval, and how many
+seconds pass between new lines. Most parameters exist for the black hole, flow field and the moon
+scenes (panel brightness exists for all); the defaults live in `SceneParams.kt`.
+
+Tweaked values are stored only when they differ from the default, so they can be read back to
+adopt them as new defaults (copy them into `SceneParams.kt`):
+
+```bash
+adb -s 192.168.10.115:5555 shell run-as com.fleece.screensaver cat shared_prefs/fleece_tweaks.xml
+# <float name="moon_globe.sweepSec" value="45.0" />  ->  scene key . parameter key
 ```
 
 Scene indices for the adb override below: `0` black hole, `1` flow field, `2` wheat field,
@@ -177,8 +194,16 @@ globe scenes briefly hold the 66 MB float height field in the Java heap while up
 Verified on the TV on 2026-10-03: Mali-G51, OpenGL ES 3.2, the dream surface is 1920x1080
 (the panel upscales), all three scenes render without errors.
 
-The look is tuned in the browser first: `preview/moon.html` runs the *same* fragment shader
-(`app/src/main/assets/moon/moon.frag`) against the same data — see `preview/README.md`.
+The look is tuned on the TV with the tweak panel (see 4b). `preview/moon.html` runs the *same*
+fragment shader (`app/src/main/assets/moon/moon.frag`) in the browser against the same data — see
+`preview/README.md` — but has no controls for the height colouring, low-line dimming, sweep pacing
+or sweep direction added for the TV.
+
+Why lines arrive at uneven intervals: with the default **Sweep pacing** of 0 the sweep advances by
+equal *surface area* per second, so it lingers on elevations that cover much of the surface and
+rushes through rare deep basins and high peaks (the info overlay shows e.g. a new line every 11 s
+early on and every 4.6 s later, at a steady ~38 fps — not lag). Pacing 1 advances equal *metres*
+per second, which gives a constant line rate.
 
 ### 5. Verify
 

@@ -30,12 +30,18 @@ uniform float uLineWidth;    // minor line width (px)
 uniform float uMajorWidth;   // major line width (px)
 uniform float uMinorBright;
 uniform float uMajorBright;
-uniform float uSweepH;       // metres: only levels at or below this are drawn
+uniform float uSweepH;       // metres: only levels at or below this are drawn (above it when uSweepDir < 0)
+uniform float uSweepDir;     // +1 = sweep rises from the lowest point, -1 = it descends from the highest
 uniform float uRiseRange;    // metres the sweep travels past a level while that line fades in (0 = instant)
 uniform float uGlowRange;    // metres below the sweep that still glow
 uniform float uGlowBright;   // extra brightness of freshly-swept lines
 uniform float uDenseMax;     // cap on the grey level where lines are too dense to resolve
 uniform float uFade;         // global multiplier (fade in/out)
+
+// Height cues (both 0 = plain white lines).
+uniform vec2  uHRange;       // metres: low and high end of the elevation ramp
+uniform float uTint;         // 0..1: colour lines by elevation (deep blue -> white -> high amber)
+uniform float uLowDim;       // 0..1: darken lines toward the lowest elevation
 
 out vec4 fragColor;
 
@@ -80,30 +86,41 @@ float contours(float h, float lit) {
     float levelH = lvl * iv;
     // A line fades in over uRiseRange metres of sweep travel after the sweep crosses its level (no hard pop),
     // while the glow peaks just after it appears and then decays.
-    float vis = smoothstep(0.0, max(uRiseRange, 1e-3), uSweepH - levelH);
-    float glow = uGlowBright * exp(-max(uSweepH - levelH, 0.0) / uGlowRange);
+    float past = (uSweepH - levelH) * uSweepDir;          // metres the sweep has travelled beyond this level
+    float vis = smoothstep(0.0, max(uRiseRange, 1e-3), past);
+    float glow = uGlowBright * exp(-max(past, 0.0) / uGlowRange);
     float sparse = cov * vis * min(base + glow, 1.0);
 
     // Where lines are too dense to resolve (steep slopes, the globe's limb): box-filtered average instead of aliasing.
     float avgCov = min(uLineWidth * w, uDenseMax);
-    float visD = smoothstep(-0.5 * w * iv, max(w * iv, uRiseRange), uSweepH - h);
-    float glowD = uGlowBright * exp(-max(uSweepH - h, 0.0) / uGlowRange);
+    float pastD = (uSweepH - h) * uSweepDir;
+    float visD = smoothstep(-0.5 * w * iv, max(w * iv, uRiseRange), pastD);
+    float glowD = uGlowBright * exp(-max(pastD, 0.0) / uGlowRange);
     float dense = avgCov * visD * min(uMinorBright + glowD, 1.0);
 
     float dens = smoothstep(0.4, 0.9, w);
     return mix(sparse, dense, dens) * lit;
 }
 
+vec3 heightColor(float h) {
+    float t = clamp((h - uHRange.x) / max(uHRange.y - uHRange.x, 1.0), 0.0, 1.0);
+    vec3 deep = vec3(0.30, 0.50, 1.00), mid = vec3(0.92, 0.94, 1.00), high = vec3(1.00, 0.66, 0.28);
+    vec3 ramp = t < 0.5 ? mix(deep, mid, t * 2.0) : mix(mid, high, t * 2.0 - 1.0);
+    return mix(vec3(1.0), ramp, uTint) * (1.0 - uLowDim * (1.0 - t));
+}
+
 void main() {
     vec2 px = gl_FragCoord.xy;
     float c = 0.0;
+    float hgt = 0.0;
 
     if (uMode == 0) {
         vec2 s = (px - 0.5 * uRes) / (0.5 * uRes.y);        // y in -1..1, x in -aspect..aspect
         float lat = uZoomCenter.x + s.y * uZoomHalfH;
         float lon = uZoomCenter.y + s.x * uZoomHalfH / cos(lat);
         vec2 uv = vec2((lon - uExtract.x) / uExtract.z, (uExtract.y - lat) / uExtract.w);
-        c = contours(height(uv), 1.0);
+        hgt = height(uv);
+        c = contours(hgt, 1.0);
     } else {
         float Rpx = uGlobeRadius * 0.5 * uRes.y;
         vec2 d = (px - 0.5 * uRes) / Rpx;
@@ -142,8 +159,9 @@ void main() {
                 float day = smoothstep(-0.1, 0.35, dot(n, uLightDir));
                 lit = mix(uLitAmbient, 1.0, dir * mag) * day;
             }
-            c = contours(height(uv), lit) * edge;
+            hgt = height(uv);
+            c = contours(hgt, lit) * edge;
         }
     }
-    fragColor = vec4(vec3(c * uFade), 1.0);
+    fragColor = vec4(heightColor(hgt) * (c * uFade), 1.0);
 }

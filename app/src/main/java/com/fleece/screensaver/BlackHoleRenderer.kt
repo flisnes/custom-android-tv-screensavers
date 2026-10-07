@@ -7,6 +7,7 @@ import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
+import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.max
@@ -19,16 +20,17 @@ import kotlin.math.sqrt
  * the event horizon is an opaque disc that occludes the far side; the photon ring is an additive
  * annulus with a rotating bright hotspot. Far faster than the Canvas/WebView path and zero GC.
  */
-class BlackHoleRenderer : GLSurfaceView.Renderer {
+class BlackHoleRenderer(private val tweaks: Tweaks) : GLSurfaceView.Renderer {
 
-    private val sim = Sim(2800)
+    private val sim = Sim(tweaks.int("particles"))
     private val n = sim.n
 
-    // viewing / look constants (match the mockup)
-    private val tilt = Math.toRadians(72.0)
-    private val sinT = sin(tilt).toFloat()
-    private val cosT = cos(tilt).toFloat()
-    private val luma = 0.72f
+    // viewing / look (tweakable; refreshed every frame from [tweaks])
+    private var sinT = 0f
+    private var cosT = 0f
+    private var luma = 0.72f
+    private var maxAlpha = 0.5f
+    private var sizeScale = SIZE_SCALE
     private val vref = sqrt(Sim.G / 0.25f)   // beaming reference speed
 
     private var w = 1f
@@ -60,7 +62,7 @@ class BlackHoleRenderer : GLSurfaceView.Renderer {
     private var fboTex = 0
     private var texProg = 0
     private var tPos = 0; private var tTex = 0; private var uTex = 0
-    private val fadeAlpha = 0.18f
+    private var fadeAlpha = -1f
     private val fadeQuad = directFloats(4 * 6)   // fullscreen NDC quad, pos+color (flat prog)
     private val fullQuad = directFloats(4 * 4)   // fullscreen NDC quad, pos+uv (tex prog)
 
@@ -108,14 +110,8 @@ class BlackHoleRenderer : GLSurfaceView.Renderer {
         tTex = GLES20.glGetAttribLocation(texProg, "aTex")
         uTex = GLES20.glGetUniformLocation(texProg, "uTex")
 
-        // static fullscreen quads (triangle strip). fadeQuad = black @ fadeAlpha; fullQuad = pos+uv.
-        fadeQuad.clear()
-        val corners = floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)
-        for (k in 0 until 4) {
-            fadeQuad.put(corners[k * 2]).put(corners[k * 2 + 1])
-            fadeQuad.put(0f).put(0f).put(0f).put(fadeAlpha)
-        }
-        fadeQuad.position(0)
+        // static fullscreen quad (triangle strip), pos+uv; the fade quad is built in setFade().
+        fadeAlpha = -1f
         fullQuad.clear()
         floatArrayOf(-1f, -1f, 0f, 0f, 1f, -1f, 1f, 0f, -1f, 1f, 0f, 1f, 1f, 1f, 1f, 1f)
             .forEach { fullQuad.put(it) }
@@ -127,7 +123,6 @@ class BlackHoleRenderer : GLSurfaceView.Renderer {
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
         GLES20.glViewport(0, 0, width, height)
         w = width.toFloat(); h = height.toFloat()
-        s = min(w, h) * 0.8f
         createFbo(width, height)
     }
 
@@ -163,14 +158,18 @@ class BlackHoleRenderer : GLSurfaceView.Renderer {
         if (dtFrames > 2.2) dtFrames = 2.2
         tMs += dtFrames * 16.6667
         val t = tMs
+        applyTweaks()
 
-        // advance simulation (2 sub-steps for stability near the hole)
-        val h2 = (dtFrames * 0.5).toFloat()
-        sim.step(h2); sim.step(h2)
+        // advance simulation (sub-steps for stability near the hole: 2 at normal speed, more when sped up)
+        val simFrames = dtFrames * tweaks["speed"]
+        val steps = max(2, ceil(simFrames * 2.0).toInt())
+        val hs = (simFrames / steps).toFloat()
+        repeat(steps) { sim.step(hs) }
 
         // OLED-safe wander of the whole scene
-        val driftX = (sin(t * 0.00005) * 0.11 + sin(t * 0.000019 + 0.7) * 0.05) * w
-        val driftY = (cos(t * 0.000061 + 1.3) * 0.07 + sin(t * 0.000023 + 2.1) * 0.04) * h
+        val wander = tweaks["wander"]
+        val driftX = (sin(t * 0.00005) * 0.11 + sin(t * 0.000019 + 0.7) * 0.05) * w * wander
+        val driftY = (cos(t * 0.000061 + 1.3) * 0.07 + sin(t * 0.000023 + 2.1) * 0.04) * h * wander
         val ox = w / 2f + driftX.toFloat()
         val oy = h / 2f + driftY.toFloat()
 
@@ -219,6 +218,30 @@ class BlackHoleRenderer : GLSurfaceView.Renderer {
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
     }
 
+    private fun applyTweaks() {
+        val tilt = Math.toRadians(tweaks["tilt"].toDouble())
+        sinT = sin(tilt).toFloat(); cosT = cos(tilt).toFloat()
+        luma = tweaks["brightness"]
+        maxAlpha = tweaks["maxAlpha"]
+        sizeScale = tweaks["particleSize"]
+        s = min(w, h) * tweaks["scale"]
+        sim.diskRespawn = tweaks["diskRespawn"]
+        sim.drain = Sim.diskDrain * tweaks["accretion"]
+        setFade(tweaks["trailFade"])
+    }
+
+    private fun setFade(a: Float) {
+        if (a == fadeAlpha) return
+        fadeAlpha = a
+        fadeQuad.clear()
+        val corners = floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)
+        for (k in 0 until 4) {
+            fadeQuad.put(corners[k * 2]).put(corners[k * 2 + 1])
+            fadeQuad.put(0f).put(0f).put(0f).put(a)
+        }
+        fadeQuad.position(0)
+    }
+
     // ---- per-frame geometry ----
     private var backCount = 0
     private var frontCount = 0
@@ -252,10 +275,10 @@ class BlackHoleRenderer : GLSurfaceView.Renderer {
             a *= 1f + 0.7f * max(-1f, min(1f, vzr / vref))
             a *= luma
             if (a <= 0.012f) continue
-            if (a > 0.5f) a = 0.5f
+            if (a > maxAlpha) a = maxAlpha
 
             val ci = (tt * (nc - 1)).toInt().coerceIn(0, nc - 1)
-            val size = (0.7f + 1.1f * pf * (1f - tt * 0.6f)) * SIZE_SCALE
+            val size = (0.7f + 1.1f * pf * (1f - tt * 0.6f)) * sizeScale
             pointBuf.put(ndcX(sxPx)).put(ndcY(syPx))
             pointBuf.put(lut[ci * 3]).put(lut[ci * 3 + 1]).put(lut[ci * 3 + 2]).put(a)
             pointBuf.put(size)
@@ -268,7 +291,7 @@ class BlackHoleRenderer : GLSurfaceView.Renderer {
         val rad = Sim.Rh * s * 3.2f
         glowBuf.clear()
         // centre (warm, bright) then rim (alpha 0)
-        putV(glowBuf, ox, oy, 1f, 0.667f, 0.353f, 0.10f * luma)
+        putV(glowBuf, ox, oy, 1f, 0.667f, 0.353f, 0.10f * luma * tweaks["glowBright"])
         for (i in 0..FANS) {
             val ang = i / FANS.toFloat() * 6.2831855f
             putV(glowBuf, ox + cos(ang) * rad, oy + sin(ang) * rad, 1f, 0.667f, 0.353f, 0f)
@@ -287,15 +310,20 @@ class BlackHoleRenderer : GLSurfaceView.Renderer {
         holeBuf.position(0)
     }
 
+    private var ringPhase = 0.0
+    private var ringLastT = 0.0
+
     private fun buildRing(ox: Float, oy: Float, t: Double) {
         val rIn = Sim.Rh * s * 1.02f
         val rOut = Sim.Rh * s * 1.2f
-        val phase = (t * 0.00035).toFloat()
+        ringPhase += (t - ringLastT) * 0.00035 * tweaks["ringSpeed"]; ringLastT = t
+        val phase = ringPhase.toFloat()
+        val ringBright = tweaks["ringBright"]
         ringBuf.clear()
         for (i in 0..RSEG) {
             val ang = i / RSEG.toFloat() * 6.2831855f
             val lobe = run { val c = 0.55f + 0.45f * cos(ang - phase); c * c }
-            val a = luma * (0.06f + 0.42f * lobe)
+            val a = luma * ringBright * (0.06f + 0.42f * lobe)
             val ca = cos(ang); val sa = sin(ang)
             putV(ringBuf, ox + ca * rIn, oy + sa * rIn, 1f, 0.91f, 0.78f, a)
             putV(ringBuf, ox + ca * rOut, oy + sa * rOut, 1f, 0.91f, 0.78f, a * 0.5f)
