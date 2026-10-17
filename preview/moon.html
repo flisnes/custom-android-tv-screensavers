@@ -135,7 +135,8 @@ let prog, uni = {}, data = {}, tex = {}, quant = {};
 const unis = ['uHeight','uRes','uMode','uZoomCenter','uZoomHalfH','uExtract','uSmooth','uRotation','uTilt','uGlobeRadius',
   'uLightDir','uLitSlope','uLitSoft','uLitAmbient','uInterval','uMajorEvery','uLineWidth','uMajorWidth','uMinorBright',
   'uMajorBright','uSweepH','uRiseRange','uGlowRange','uGlowBright','uDenseMax','uFade',
-  'uSweepDir','uHRange','uTint','uLowDim','uBodyR','uEarthCol','uSnowLine'];
+  'uSweepDir','uHRange','uTint','uLowDim','uBodyR','uEarthCol','uSnowLine',
+  'uFill','uSea0','uSea1','uSea2','uLand0','uLand1','uLand2','uSeaDepth','uLandTop'];
 
 async function fetchBuf(url, label) {
   status('loading ' + label + '…');
@@ -220,8 +221,8 @@ function pickNames(w) {
   }
 }
 
-// --- place name (earth zoom; mirrors PlaceNames.kt; TV tweak "placeNames", on by default): ?placeNames=0 hides it --
-const PLACE = { on: BODY === 'earth' && Q.get('placeNames') !== '0', size: 26, bright: 0.75, places: [], grid: null, name: null, sea: false };
+// --- place name (earth zoom; the old single-name PlaceNames.kt, now MapLabels.kt on the TV): ?placeNames=1 shows it --
+const PLACE = { on: BODY === 'earth' && Q.get('placeNames') === '1', size: 26, bright: 0.75, places: [], grid: null, name: null, sea: false };
 function pickPlace(w) {
   PLACE.name = null;
   if (!PLACE.on || !PLACE.grid) return;
@@ -459,6 +460,12 @@ function frame(now) {
   gl.uniform1f(uni.uEarthCol, BODY === 'earth' && Q.get('earthColors') === '1' ? 1 : 0);
   gl.uniform1f(uni.uSnowLine, parseFloat(Q.get('snowLine') || '4000'));
   gl.uniform1f(uni.uFade, st.fade);
+  // Earth close-up fill (TV tweaks fill, sea*/land* colours): ?fill=0.55 (defaults as in SceneParams.kt)
+  const rgb = (k, d) => { const n = parseInt(Q.get(k) || d, 16); return [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255]; };
+  gl.uniform1f(uni.uFill, BODY === 'earth' && sc.mode === 0 ? parseFloat(Q.get('fill') || '0') : 0);
+  gl.uniform3fv(uni.uSea0, rgb('seaShallow', '3F86D0')); gl.uniform3fv(uni.uSea1, rgb('seaMid', '224A86')); gl.uniform3fv(uni.uSea2, rgb('seaDeep', '050E3C'));
+  gl.uniform3fv(uni.uLand0, rgb('landLow', '3C8C3A')); gl.uniform3fv(uni.uLand1, rgb('landMid', '9DC59C')); gl.uniform3fv(uni.uLand2, rgb('landHigh', 'FFFFFF'));
+  gl.uniform1f(uni.uSeaDepth, parseFloat(Q.get('seaDepth') || '6000')); gl.uniform1f(uni.uLandTop, parseFloat(Q.get('landTop') || '5000'));
   // Height cues and sweep direction are tuned on the TV (tweak panel); neutral here.
   gl.uniform1f(uni.uSweepDir, 1); gl.uniform2f(uni.uHRange, 0, 1); gl.uniform1f(uni.uTint, 0); gl.uniform1f(uni.uLowDim, 0);
   if (sc.mode === 0) {

@@ -31,7 +31,8 @@ import kotlin.math.sqrt
 /**
  * Topographic contour maps of the Moon or the Earth (white lines on black): the Moon from the LRO LOLA
  * height model in assets/moon (tools/moon_data.py), the Earth from NOAA ETOPO 2022 land + sea-floor relief
- * in assets/earth (tools/earth_data.py). Every mode shares one fragment shader (assets/moon/moon.frag,
+ * in assets/earth (tools/earth_data.py); the Earth close-up can fill the bands between the lines with sea / land
+ * colour ramps and names countries, seas and landmarks ([MapLabels]). Every mode shares one fragment shader (assets/moon/moon.frag,
  * also used verbatim by preview/moon.html). All look and timing values are live [Tweaks] (defaults in
  * [SceneParams.moon]), adjusted from the preview's tweak panel on the TV:
  *
@@ -92,7 +93,7 @@ class MoonRenderer(
         val lat: Float = 0f, val lon: Float = 0f, val hh0: Float = 0f, val extract: FloatArray = FloatArray(4),
     ) {
         var names: CraterLabels.Batch? = null           // moon zoom: crater names for this window
-        var place: PlaceNames.Batch? = null             // earth zoom: the country / sea in view
+        var map: MapLabels.Batch? = null                // earth zoom: countries, seas and landmarks in view
         val lo = quant.first()
         val hi = quant.last()
     }
@@ -101,8 +102,8 @@ class MoonRenderer(
     private var current: Field? = null
     /** Crater names: only the moon close-up has them. */
     private val labels = if (body == Body.MOON && mode == Mode.ZOOM) CraterLabels(context) else null
-    /** Place name: only the Earth close-up has it. */
-    private val places = if (body == Body.EARTH && mode == Mode.ZOOM) PlaceNames(context) else null
+    /** Country, sea and landmark names: only the Earth close-up has them. */
+    private val mapLabels = if (body == Body.EARTH && mode == Mode.ZOOM) MapLabels(context) else null
 
     // ---- animation --------------------------------------------------------------------------------
     private enum class Phase { SWEEP, HOLD, FADE }
@@ -149,7 +150,7 @@ class MoonRenderer(
         val t = IntArray(1); GLES30.glGenTextures(1, t, 0); tex = t[0]
         texW = 0; texH = 0
         labels?.initGl(::link)
-        places?.initGl(::link)
+        mapLabels?.initGl(::link)
 
         readManifest()
         current = null; pending = null; loading = false
@@ -177,7 +178,7 @@ class MoonRenderer(
             if (current == null || phase == Phase.FADE && phaseT >= fadeSec) {
                 upload(f); f.data = null; current = f; pending = null
                 f.names?.let { labels?.show(it) }
-                f.place?.let { places?.show(it) }
+                f.map?.let { mapLabels?.show(it) }
                 phase = Phase.SWEEP; phaseT = 0f; cycleT = 0f
             }
         }
@@ -259,6 +260,12 @@ class MoonRenderer(
         set1f("uLowDim", t["lowDim"])
         set1f("uEarthCol", if (body == Body.EARTH && t.bool("earthColors")) 1f else 0f)
         if (body == Body.EARTH) set1f("uSnowLine", t["snowLine"])
+        if (body == Body.EARTH && mode == Mode.ZOOM) {
+            set1f("uFill", t["fill"])
+            setColor("uSea0", t.int("seaShallow")); setColor("uSea1", t.int("seaMid")); setColor("uSea2", t.int("seaDeep"))
+            setColor("uLand0", t.int("landLow")); setColor("uLand1", t.int("landMid")); setColor("uLand2", t.int("landHigh"))
+            set1f("uSeaDepth", t["seaDepth"]); set1f("uLandTop", t["landTop"])
+        } else set1f("uFill", 0f)
 
         if (mode == Mode.ZOOM) {
             val z = 1f - t["driftZoom"] * progress
@@ -270,15 +277,20 @@ class MoonRenderer(
             set1f("uZoomHalfH", cur.hh0 * z)
             GLES30.glUniform4f(u["uExtract"]!!, cur.extract[0], cur.extract[1], cur.extract[2], cur.extract[3])
             GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
+            // A name fades in with the contour line it sits on, exactly as moon.frag fades in that line.
+            val rise = max(t["lineFadeSec"] * levelRate(cur, interval, sweepSec) * interval, 1e-3f)
+            val dir = if (down) -1f else 1f
             if (labels != null && t.bool("craterNames")) {
-                // A name fades in with its crater's floor contour, exactly as moon.frag fades in that line.
-                val rise = max(t["lineFadeSec"] * levelRate(cur, interval, sweepSec) * interval, 1e-3f)
-                val dir = if (down) -1f else 1f
                 labels.draw(cLat, cLon, cur.hh0 * z, vw, vh, fade, t["labelBright"], interval) { level ->
                     smoothstep(0f, rise, (sweepH - level) * dir)
                 }
             }
-            if (places != null && t.bool("placeNames")) places.draw(vw, vh, fade, t["placeBright"])
+            mapLabels?.draw(cLat, cLon, cur.hh0 * z, vw, vh, fade, t.bool("placeNames"), t["placeBright"],
+                t.bool("landmarkNames"), t["landmarkBright"]) { h ->
+                // The first level the sweep crosses after it has covered the named spot.
+                val level = (if (down) floor(h / interval) else ceil(h / interval)) * interval
+                smoothstep(0f, rise, (sweepH - level) * dir)
+            }
             return
         } else {
             rotation += dt * 2f * PI.toFloat() / t["revSec"]
@@ -424,7 +436,13 @@ class MoonRenderer(
             f.names = l.build(f.lat, f.lon, f.hh0, vw, vh, radius, tweaks.int("labelMax"), tweaks["labelMinSize"],
                 tweaks["labelSize"] * pxScale(), f.data!!, f.w, f.h, f.extract)
         }
-        places?.let { f.place = it.build(f.lat, f.lon, f.hh0, vw, vh, tweaks["placeSize"] * pxScale()) }
+        mapLabels?.let { m ->
+            val px = pxScale()
+            val s = MapLabels.Settings(tweaks.bool("placeNames"), tweaks.int("placeMax"), tweaks["placeSize"] * px,
+                tweaks.bool("landmarkNames"), tweaks.int("landmarkMax"), tweaks["landmarkSize"] * px,
+                1f / (1f - tweaks["driftZoom"]), tweaks["driftPan"] * vh / 2f)
+            f.map = m.build(f.lat, f.lon, f.hh0, vw, vh, s, f.data!!, f.w, f.h, f.extract)
+        }
         return f
     }
 
@@ -547,6 +565,9 @@ class MoonRenderer(
 
     private fun set1f(name: String, v: Float) { u[name]?.let { if (it >= 0) GLES30.glUniform1f(it, v) } }
     private fun set1i(name: String, v: Int) { u[name]?.let { if (it >= 0) GLES30.glUniform1i(it, v) } }
+    private fun setColor(name: String, rgb: Int) {
+        u[name]?.let { if (it >= 0) GLES30.glUniform3f(it, (rgb shr 16 and 255) / 255f, (rgb shr 8 and 255) / 255f, (rgb and 255) / 255f) }
+    }
 
     private fun link(vs: String, fs: String): Int {
         fun compile(type: Int, src: String): Int {
@@ -572,7 +593,8 @@ class MoonRenderer(
         private val UNIFORMS = listOf("uHeight", "uRes", "uMode", "uZoomCenter", "uZoomHalfH", "uExtract", "uSmooth", "uRotation",
             "uTilt", "uGlobeRadius", "uLightDir", "uLitSlope", "uLitSoft", "uLitAmbient", "uInterval", "uMajorEvery", "uLineWidth",
             "uMajorWidth", "uMinorBright", "uMajorBright", "uSweepH", "uRiseRange", "uGlowRange", "uGlowBright", "uDenseMax", "uFade",
-            "uSweepDir", "uHRange", "uTint", "uLowDim", "uPulse", "uPulsePos", "uPulseSpacing", "uBodyR", "uEarthCol", "uSnowLine")
+            "uSweepDir", "uHRange", "uTint", "uLowDim", "uPulse", "uPulsePos", "uPulseSpacing", "uBodyR", "uEarthCol", "uSnowLine",
+            "uFill", "uSea0", "uSea1", "uSea2", "uLand0", "uLand1", "uLand2", "uSeaDepth", "uLandTop")
         private const val VS = """#version 300 es
 void main() {
   vec2 p = vec2(gl_VertexID == 1 ? 3.0 : -1.0, gl_VertexID == 2 ? 3.0 : -1.0);

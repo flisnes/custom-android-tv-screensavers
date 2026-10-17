@@ -53,6 +53,15 @@ uniform float uLowDim;       // 0..1: darken lines toward the lowest elevation
 uniform float uEarthCol;     // 0..1: Earth colours by contour level: sea floor blue, land green, snow white
 uniform float uSnowLine;     // metres: snow line at the equator; it drops toward the poles as cos(lat)^1.5
 
+// Earth fill (0 = black between the lines): each band between two neighbouring levels gets one colour from a
+// three-stop ramp, sea floor from uSea0 (shallow) to uSea2 (uSeaDepth and deeper), land from uLand0 (sea level)
+// to uLand2 (uLandTop and higher). 0 m is always a contour level, so no band straddles the coastline.
+uniform float uFill;         // 0..1: fill opacity
+uniform vec3  uSea0, uSea1, uSea2;
+uniform vec3  uLand0, uLand1, uLand2;
+uniform float uSeaDepth;     // metres below sea level where the sea ramp reaches uSea2
+uniform float uLandTop;      // metres above sea level where the land ramp reaches uLand2
+
 out vec4 fragColor;
 
 const float PI = 3.14159265358979;
@@ -136,11 +145,27 @@ vec3 heightColor(float h, float lat) {
     return col * (1.0 - uLowDim * (1.0 - t));
 }
 
+vec3 ramp3(vec3 a, vec3 b, vec3 c, float t) { return t < 0.5 ? mix(a, b, t * 2.0) : mix(b, c, t * 2.0 - 1.0); }
+
+// Fill colour of the band containing h (pre-fade). A band appears with the line the sweep crosses last on its edge,
+// so the sweep floods the map band by band.
+vec3 fillColor(float h) {
+    float band = floor(h / uInterval);                       // between levels band and band + 1
+    float mid = (band + 0.5) * uInterval;
+    vec3 col = mid < 0.0
+        ? ramp3(uSea0, uSea1, uSea2, pow(clamp(-mid / uSeaDepth, 0.0, 1.0), 0.6))     // shelves get a visible share
+        : ramp3(uLand0, uLand1, uLand2, pow(clamp(mid / uLandTop, 0.0, 1.0), 0.8));
+    float edge = (uSweepDir > 0.0 ? band + 1.0 : band) * uInterval;
+    float vis = uPulse == 1 ? 1.0 : smoothstep(0.0, max(uRiseRange, 1e-3), (uSweepH - edge) * uSweepDir);
+    return col * (vis * uFill);
+}
+
 void main() {
     vec2 px = gl_FragCoord.xy;
     float c = 0.0;
     float hgt = 0.0;
     float lat = 0.0;
+    vec3 fill = vec3(0.0);
 
     if (uMode == 0) {
         vec2 s = (px - 0.5 * uRes) / (0.5 * uRes.y);        // y in -1..1, x in -aspect..aspect
@@ -149,6 +174,7 @@ void main() {
         vec2 uv = vec2((lon - uExtract.x) / uExtract.z, (uExtract.y - lat) / uExtract.w);
         hgt = height(uv);
         c = contours(hgt, 1.0);
+        if (uFill > 0.0) fill = fillColor(hgt);
     } else {
         float Rpx = uGlobeRadius * 0.5 * uRes.y;
         vec2 d = (px - 0.5 * uRes) / Rpx;
@@ -191,5 +217,6 @@ void main() {
             c = contours(hgt, lit) * edge;
         }
     }
-    fragColor = vec4(heightColor(hgt, lat) * (c * uFade), 1.0);
+    // Lines are laid over the fill (c is the line's coverage times its brightness).
+    fragColor = vec4(mix(fill, heightColor(hgt, lat), min(c, 1.0)) * uFade, 1.0);
 }

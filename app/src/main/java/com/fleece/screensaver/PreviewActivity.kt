@@ -8,6 +8,10 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
+import android.text.style.RelativeSizeSpan
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
@@ -26,6 +30,7 @@ import java.util.concurrent.atomic.AtomicLong
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import kotlin.math.max
+import kotlin.math.roundToInt
 
 /**
  * Runs one scene full screen, exactly as the dream would (same renderer, same dimming), until Back is
@@ -233,14 +238,17 @@ class PreviewActivity : Activity() {
                 val p = scene.params[i]
                 val v = tweaks[p.key]
                 val changed = !p.isDefault(v)
-                texts[1].text = p.format(v)
+                texts[1].text = if (!p.color) p.format(v) else SpannableString("■  " + p.format(v)).apply {
+                    setSpan(ForegroundColorSpan(0xFF000000.toInt() or v.roundToInt()), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    setSpan(RelativeSizeSpan(1.6f), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                }
                 texts[1].setTextColor(if (changed) AMBER else Color.WHITE)
                 texts[0].setTextColor(if (changed) AMBER else Color.WHITE)
             }
         }
         help.text = if (sel < scene.params.size) {
             val p = scene.params[sel]
-            val range = if (p.choices == null) "  (${p.format(p.min)} – ${p.format(p.max)})" else ""
+            val range = if (p.color) "  (Left/Right: ${Palette.colors.size} colours)" else if (p.choices == null) "  (${p.format(p.min)} – ${p.format(p.max)})" else ""
             listOf(p.help, "Default: ${p.format(p.default)}$range" + if (p.restart) " · restarts the scene" else "")
                 .filter { it.isNotEmpty() }.joinToString("\n")
         } else {
@@ -309,7 +317,7 @@ class PreviewActivity : Activity() {
                 val dir = if (event.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) 1 else -1
                 val fast = if (p.choices == null && event.repeatCount > 8) 5 else 1   // holding accelerates
                 val v = tweaks[p.key]
-                change(p, if (p.choices != null) (v + dir + p.choices.size) % p.choices.size else v + dir * p.step * fast)
+                change(p, if (p.color) Palette.step(v.roundToInt(), dir).toFloat() else if (p.choices != null) (v + dir + p.choices.size) % p.choices.size else v + dir * p.step * fast)
             }
             else -> if (isOk && event.repeatCount == 0) {
                 if (onParam) scene.params[sel].let { change(it, it.default) } else resetAll()

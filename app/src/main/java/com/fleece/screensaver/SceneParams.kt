@@ -138,11 +138,43 @@ object SceneParams {
             Param("labelSize", "Name size (px)", 20f, 10f, 40f, 1f, "From the next window.", "Names"),
             Param("labelBright", "Name brightness", 0.55f, 0.1f, 1f, 0.05f, "", "Names"),
         ) else if (zoom) listOf(
-            toggleParam("placeNames", "Place name", true,
-                "Name the country in view at the bottom of the screen (the sea, if there is little land).", "Names"),
-            Param("placeSize", "Name size (px)", 26f, 12f, 48f, 1f, "From the next window.", "Names"),
-            Param("placeBright", "Name brightness", 0.75f, 0.1f, 1f, 0.05f, "", "Names"),
+            toggleParam("placeNames", "Country & sea names", true,
+                "Name the countries, oceans and seas that fill a good part of the view, each in its middle. " +
+                    "A country's name appears with the coastline, a sea's with the sea floor under it.", "Names"),
+            Param("placeMax", "Max country & sea names", 4f, 1f, 8f, 1f, "From the next window.", "Names"),
+            Param("placeSize", "Country & sea name size (px)", 28f, 14f, 56f, 1f, "From the next window.", "Names"),
+            Param("placeBright", "Country & sea name brightness", 0.8f, 0.1f, 1f, 0.05f, "", "Names"),
+            toggleParam("landmarkNames", "Landmark names", true,
+                "Name prominent peaks, mountain ranges, rivers, lakes, canyons, deserts, trenches, ridges, reefs, " +
+                    "straits and fjords in view. Each appears as the sweep reaches its height.", "Names"),
+            Param("landmarkMax", "Max landmark names", 6f, 1f, 20f, 1f, "Most prominent first, overlapping names skipped. From the next window.", "Names"),
+            Param("landmarkSize", "Landmark name size (px)", 22f, 10f, 40f, 1f, "From the next window.", "Names"),
+            Param("landmarkBright", "Landmark name brightness", 0.8f, 0.1f, 1f, 0.05f, "", "Names"),
         ) else emptyList()
-        return sweep + height + lines + view + light + names
+        val fill = if (zoom && earth) listOf(
+            Param("fill", "Fill between lines", 0.55f, 0f, 1f, 0.05f,
+                "Colours the bands between the contour lines: sea floor blue, deepening to dark blue; land green, " +
+                    "turning white toward the peaks. 0 = black.", "Fill"),
+            colorParam("seaShallow", "Sea: shallows", SEA_SHALLOW, "", "Fill"),
+            colorParam("seaMid", "Sea: middle", mid(SEA_SHALLOW, SEA_DEEP), "Halfway down the sea ramp.", "Fill"),
+            colorParam("seaDeep", "Sea: deepest", SEA_DEEP, "", "Fill"),
+            Param("seaDepth", "Sea: deepest colour at (m)", 6000f, 500f, 11000f, 250f, "Depth where the ramp reaches the deepest colour.", "Fill"),
+            colorParam("landLow", "Land: lowlands", LAND_LOW, "", "Fill"),
+            colorParam("landMid", "Land: middle", mid(LAND_LOW, LAND_HIGH), "Halfway up the land ramp.", "Fill"),
+            colorParam("landHigh", "Land: peaks", LAND_HIGH, "", "Fill"),
+            Param("landTop", "Land: peak colour from (m)", 5000f, 500f, 8000f, 250f, "Height where the ramp reaches the peak colour.", "Fill"),
+        ) else emptyList()
+        return sweep + height + fill + lines + view + light + names
+    }
+
+    private const val SEA_SHALLOW = 0x3F86D0
+    private const val SEA_DEEP = 0x050E3C
+    private const val LAND_LOW = 0x3C8C3A
+    private const val LAND_HIGH = 0xFFFFFF
+
+    /** The colour halfway between [a] and [b] (so a three-stop ramp defaults to a plain two-colour one). */
+    private fun mid(a: Int, b: Int): Int {
+        fun ch(s: Int) = ((a shr s and 255) + (b shr s and 255)) / 2 shl s
+        return ch(16) or ch(8) or ch(0)
     }
 }
