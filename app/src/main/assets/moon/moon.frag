@@ -1,6 +1,7 @@
 #version 300 es
 // Moon / Earth contour-map scenes. Shared verbatim by preview/moon.html (WebGL2) and MoonRenderer.kt (GL ES 3.0).
-// Heights are in metres, in an R16F texture (globe: full equirectangular sphere; zoom: an extracted window).
+// Heights are in metres: globe, a full equirectangular sphere in an R16F texture (hardware-filtered); zoom, an extracted
+// window in an R32F texture, filtered here in full precision (uSmooth == 2).
 precision highp float;
 precision highp sampler2D;
 
@@ -12,7 +13,8 @@ uniform int   uMode;         // 0 = zoom window, 1 = spinning globe, 2 = lit glo
 uniform vec2  uZoomCenter;   // (lat, lon) radians
 uniform float uZoomHalfH;    // half of the vertical angular extent on screen (radians)
 uniform vec4  uExtract;      // lon0, lat0 (top-left of the extracted texture, radians), dlon, dlat (extent, radians; dlat > 0 going south)
-uniform int   uSmooth;       // 1 = bicubic B-spline sampling (hides the source grid when zoomed in)
+uniform int   uSmooth;       // 1 = bicubic B-spline sampling (hides the source grid when zoomed in); 2 = the same from an
+                             // R32F texture with texelFetch, all in fp32 (see sampleHExact)
 
 // Modes 1/2: orthographic globe.
 uniform float uRotation;     // longitude offset (radians)
@@ -86,7 +88,43 @@ float sampleHSmooth(vec2 uv) {
          + (texture(uHeight, vec2(o0.x, o1.y)).r * s0.x + texture(uHeight, vec2(o1.x, o1.y)).r * s1.x) * s1.y;
 }
 
-float height(vec2 uv) { return uSmooth == 1 ? sampleHSmooth(uv) : sampleH(uv); }
+// The B-spline from 16 unfiltered fp32 texels. Mali returns hardware-filtered half floats in half precision: 4 m steps
+// at 5 km depth, which on a flat sea floor put pixel-sized kinks in the contours that crawled as the view drifted.
+// The app compiles this as ES 3.1 with GATHER defined: four textureGathers fetch the 4x4 texels as cheaply as the four
+// bilinear taps of sampleHSmooth. WebGL2 (the PC preview) has no gather and uses 16 texelFetches.
+float sampleHExact(vec2 uv) {
+    ivec2 ts = textureSize(uHeight, 0);
+    vec2 p = uv * vec2(ts) - 0.5;
+    vec2 i = floor(p);
+    vec2 f = p - i;
+    vec2 f2 = f * f, f3 = f2 * f;
+    vec4 wx = vec4(1.0 - 3.0 * f.x + 3.0 * f2.x - f3.x, 4.0 - 6.0 * f2.x + 3.0 * f3.x, 1.0 + 3.0 * f.x + 3.0 * f2.x - 3.0 * f3.x, f3.x) / 6.0;
+    vec4 wy = vec4(1.0 - 3.0 * f.y + 3.0 * f2.y - f3.y, 4.0 - 6.0 * f2.y + 3.0 * f3.y, 1.0 + 3.0 * f.y + 3.0 * f2.y - 3.0 * f3.y, f3.y) / 6.0;
+#ifdef GATHER
+    // A gather at the corner shared by texels (a, b) .. (a + 1, b + 1) returns them as x = (a, b+1), y = (a+1, b+1),
+    // z = (a+1, b), w = (a, b); the clamp-to-edge wrap mode handles the window border.
+    vec2 inv = 1.0 / vec2(ts);
+    vec4 g00 = textureGather(uHeight, (i + vec2(0.0, 0.0)) * inv);
+    vec4 g10 = textureGather(uHeight, (i + vec2(2.0, 0.0)) * inv);
+    vec4 g01 = textureGather(uHeight, (i + vec2(0.0, 2.0)) * inv);
+    vec4 g11 = textureGather(uHeight, (i + vec2(2.0, 2.0)) * inv);
+    return wy.x * (dot(g00.wz, wx.xy) + dot(g10.wz, wx.zw)) + wy.y * (dot(g00.xy, wx.xy) + dot(g10.xy, wx.zw))
+         + wy.z * (dot(g01.wz, wx.xy) + dot(g11.wz, wx.zw)) + wy.w * (dot(g01.xy, wx.xy) + dot(g11.xy, wx.zw));
+#else
+    ivec2 hi = ts - 1;
+    ivec4 xs = clamp(ivec4(i.x) + ivec4(-1, 0, 1, 2), 0, hi.x);
+    ivec4 ys = clamp(ivec4(i.y) + ivec4(-1, 0, 1, 2), 0, hi.y);
+    vec4 rows;
+    for (int k = 0; k < 4; k++) {
+        vec4 t = vec4(texelFetch(uHeight, ivec2(xs.x, ys[k]), 0).r, texelFetch(uHeight, ivec2(xs.y, ys[k]), 0).r,
+                      texelFetch(uHeight, ivec2(xs.z, ys[k]), 0).r, texelFetch(uHeight, ivec2(xs.w, ys[k]), 0).r);
+        rows[k] = dot(t, wx);
+    }
+    return dot(rows, wy);
+#endif
+}
+
+float height(vec2 uv) { return uSmooth == 2 ? sampleHExact(uv) : uSmooth == 1 ? sampleHSmooth(uv) : sampleH(uv); }
 
 // Pulse envelope for a line at height h: 0 until a front reaches it, then a quick rise and an exponential decay,
 // shifted so it is back at exactly 0 when the next front arrives (no step).
@@ -100,7 +138,9 @@ float pulseEnv(float h) {
 float contours(float h, float lit) {
     float iv = uInterval;
     float f = h / iv;
-    float w = max(fwidth(f), 1e-5);             // contour levels per pixel
+    // Contour levels per pixel: the gradient's length, so a line keeps its width in every direction (fwidth, |dx| + |dy|,
+    // drew diagonal stretches up to 41% thicker, so a winding line pulsed in width as it drifted).
+    float w = max(length(vec2(dFdx(f), dFdy(f))), 1e-5);
     float lvl = floor(f + 0.5);
     float g = abs(f - lvl);                     // distance to nearest level, in levels
 

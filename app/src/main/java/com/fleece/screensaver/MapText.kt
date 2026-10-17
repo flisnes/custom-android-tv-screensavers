@@ -136,7 +136,8 @@ object MapText {
 
         /**
          * A name with its anchor at screen px ([cx], [cy]) (y up), at [alpha] opacity, tinted [rgb] (0xRRGGBB) and turned
-         * [angle] radians counter-clockwise about the anchor. Level names are snapped to whole px to stay crisp.
+         * [angle] radians counter-clockwise about the anchor. Positions are not snapped to whole px: the map drifts
+         * smoothly under the names, and snapping made them step a pixel at a time against it.
          */
         fun quad(g: Glyphs, cx: Float, cy: Float, alpha: Float, vw: Int, vh: Int, rgb: Int = 0xFFFFFF, angle: Float = 0f) {
             if (alpha <= 0f || verts.remaining() < 6 * STRIDE) return
@@ -144,8 +145,7 @@ object MapText {
             // Corners relative to the anchor, y up (bitmap row 0 is the top of the name).
             val l = -g.ax; val rt = g.w - g.ax; val b = g.ay - g.h; val t = g.ay
             val c = cos(angle); val s = sin(angle)
-            var ox = cx; var oy = cy
-            if (angle == 0f) { ox = Math.round(cx + l) - l; oy = Math.round(cy + b) - b }
+            val ox = cx; val oy = cy
             fun corner(x: Float, y: Float, u: Float, v: Float) {
                 verts.put((ox + x * c - y * s) / vw * 2f - 1f); verts.put((oy + x * s + y * c) / vh * 2f - 1f)
                 verts.put(u); verts.put(v); verts.put(alpha); verts.put(r); verts.put(gr); verts.put(bl)

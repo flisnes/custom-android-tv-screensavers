@@ -46,7 +46,7 @@ import kotlin.math.sqrt
  *  PULSE — the spinning globe with every line always drawn at a dim resting level, while pulses of
  *          light run endlessly through the elevations (no sweep / hold / fade-out cycle).
  *
- * Requires a GL ES 3.0 context (R16F height textures, `#version 300 es`).
+ * Requires a GL ES 3.0 context (R16F / R32F height textures, `#version 300 es`).
  */
 class MoonRenderer(
     private val context: Context,
@@ -144,7 +144,12 @@ class MoonRenderer(
         val mt = IntArray(1); GLES30.glGetIntegerv(GLES30.GL_MAX_TEXTURE_SIZE, mt, 0); maxTex = mt[0]
 
         val fs = context.assets.open("moon/moon.frag").bufferedReader().readText()
-        prog = link(VS, fs)
+        // ES 3.1 for textureGather (moon.frag's GATHER path: cheap fp32 filtering of the zoom window); plain 3.0 if the
+        // context cannot compile it.
+        fun es31(src: String) = src.replaceFirst("#version 300 es", "#version 310 es\n#define GATHER 1")
+        prog = link(es31(VS), es31(fs))
+        val linked = IntArray(1); GLES30.glGetProgramiv(prog, GLES30.GL_LINK_STATUS, linked, 0)
+        if (linked[0] == 0) { GLES30.glDeleteProgram(prog); prog = link(VS, fs); Log.w(TAG, "no ES 3.1; texelFetch filtering") }
         for (name in UNIFORMS) u[name] = GLES30.glGetUniformLocation(prog, name)
 
         val t = IntArray(1); GLES30.glGenTextures(1, t, 0); tex = t[0]
@@ -228,7 +233,7 @@ class MoonRenderer(
         set1i("uHeight", 0)
         GLES30.glUniform2f(u["uRes"]!!, vw.toFloat(), vh.toFloat())
         set1i("uMode", mode.id)
-        set1i("uSmooth", 1)
+        set1i("uSmooth", if (mode == Mode.ZOOM) 2 else 1)   // zoom: fp32 filtering in the shader (R32F)
         set1f("uInterval", interval)
         set1f("uMajorEvery", t["majorEvery"])
         set1f("uLineWidth", t["lineWidth"] * pxScale())
@@ -540,15 +545,22 @@ class MoonRenderer(
 
     // ---- GL helpers -------------------------------------------------------------------------------
 
-    /** (Re)allocate the R16F texture and upload the field in row chunks (keeps direct-buffer use small). */
+    /**
+     * (Re)allocate the height texture and upload the field in row chunks (keeps direct-buffer use small). Globes are
+     * R16F with hardware filtering; zoom windows are R32F, which ES 3.0 cannot filter: moon.frag fetches the texels
+     * and filters them itself in fp32 (hardware-filtered half floats came back in half precision, kinking contours).
+     */
     private fun upload(f: Field) {
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tex)
+        val exact = mode == Mode.ZOOM
         if (f.w != texW || f.h != texH) {
-            GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_R16F, f.w, f.h, 0, GLES30.GL_RED, GLES30.GL_FLOAT, null)
+            GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, if (exact) GLES30.GL_R32F else GLES30.GL_R16F, f.w, f.h, 0,
+                GLES30.GL_RED, GLES30.GL_FLOAT, null)
             texW = f.w; texH = f.h
         }
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
-        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
+        val filter = if (exact) GLES30.GL_NEAREST else GLES30.GL_LINEAR
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, filter)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, filter)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, if (mode == Mode.ZOOM) GLES30.GL_CLAMP_TO_EDGE else GLES30.GL_REPEAT)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
         val data = f.data ?: return

@@ -265,12 +265,14 @@ function link(vsSrc, fsSrc) {
   gl.linkProgram(p); if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p)); return p;
 }
 
-function uploadR16F(w, h, f32, wrapS) {
+// exact: R32F, unfiltered; moon.frag filters it in fp32 (uSmooth = 2), as the app does for zoom windows.
+function uploadR16F(w, h, f32, wrapS, exact = false) {
   const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, w, h, 0, gl.RED, gl.FLOAT, f32);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texImage2D(gl.TEXTURE_2D, 0, exact ? gl.R32F : gl.R16F, w, h, 0, gl.RED, gl.FLOAT, f32);
+  const filter = exact ? gl.NEAREST : gl.LINEAR;
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrapS);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   return t;
@@ -370,7 +372,7 @@ function pickWindow() {
   win = best;
   pickNames(win);
   if (tex.zoom) gl.deleteTexture(tex.zoom);
-  tex.zoom = uploadR16F(best.w, best.h, best.f32, gl.CLAMP_TO_EDGE);
+  tex.zoom = uploadR16F(best.w, best.h, best.f32, gl.CLAMP_TO_EDGE, true);
   best.f32 = null;
 }
 
@@ -444,7 +446,7 @@ function frame(now) {
   gl.uniform2f(uni.uRes, canvas.width, canvas.height);
   gl.uniform1i(uni.uMode, sc.mode);
   gl.uniform1f(uni.uInterval, interval);
-  gl.uniform1i(uni.uSmooth, v.smooth);
+  gl.uniform1i(uni.uSmooth, sc.mode === 0 && v.smooth ? 2 : v.smooth);   // zoom: fp32 filtering of the R32F window
   gl.uniform1f(uni.uMajorEvery, v.majorEvery);
   gl.uniform1f(uni.uLineWidth, v.lineWidth * devicePixelRatio);
   gl.uniform1f(uni.uMajorWidth, v.majorWidth * devicePixelRatio);
