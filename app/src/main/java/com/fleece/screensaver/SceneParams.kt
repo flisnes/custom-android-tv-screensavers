@@ -44,22 +44,38 @@ object SceneParams {
         choiceParam("palette", "Palette", 0, listOf("Aurora", "Ice", "Ember", "White"), "", "Current"),
     )
 
-    fun moon(mode: MoonRenderer.Mode): List<Param> {
+    /**
+     * Shared by the Moon and Earth contour scenes ([MoonRenderer]). Earth: busier land relief at the zoom scale
+     * (smoother, sparser lines) and gentler slopes per texel on the larger globe (lower lit threshold).
+     */
+    fun moon(mode: MoonRenderer.Mode, body: MoonRenderer.Body = MoonRenderer.Body.MOON): List<Param> {
+        val earth = body == MoonRenderer.Body.EARTH
         val lit = mode == MoonRenderer.Mode.LIT
         val zoom = mode == MoonRenderer.Mode.ZOOM
-        val sweep = listOf(
+        val pulse = mode == MoonRenderer.Mode.PULSE
+        val sweep = if (pulse) listOf(
+            Param("pulseSpeed", "Pulse speed (m/s)", 1200f, 100f, 5000f, 100f,
+                "Metres of elevation a pulse front climbs (or descends) per second.", "Pulse"),
+            Param("pulseSpacing", "Pulse spacing (m)", 5000f, 1000f, 20000f, 500f,
+                "Elevation between successive pulse fronts; the " + (if (earth) "Earth globe data spans about 15 000 m, deepest trench to the Himalaya."
+                    else "Moon spans about 20 000 m."), "Pulse"),
+            choiceParam("direction", "Pulse direction", 0, listOf("Uphill", "Downhill"),
+                "Uphill: pulses start in the basins and climb toward the peaks.", "Pulse"),
+            Param("glowBright", "Pulse brightness", 1f, 0f, 2f, 0.05f, "Extra brightness of a line as a pulse passes.", "Pulse"),
+            Param("pulseTrail", "Pulse trail (m)", 1500f, 100f, 10000f, 100f,
+                "How far behind a front lines keep glowing (elevation).", "Pulse"),
+            Param("lineFadeSec", "Pulse fade-in (s)", 1f, 0f, 3f, 0.1f,
+                "Seconds a line takes to brighten as a front reaches it.", "Pulse"),
+        ) else listOf(
             Param("sweepSec", "Sweep duration (s)", 30f, 5f, 240f, 1f,
                 "Seconds for the sweep to travel from the lowest to the highest point.", "Sweep"),
-            Param("pacing", "Sweep pacing", 0f, 0f, 1f, 0.1f,
-                "0 = by area (lingers on common heights, rushes through rare deep/high ones: uneven line timing). " +
-                    "1 = by height (a constant number of metres per second: lines appear at a steady rate).", "Sweep"),
-            Param("ease", "Ease in/out", 0.6f, 0f, 1f, 0.05f, "Slow start and end of the sweep (0 = constant speed).", "Sweep"),
             choiceParam("direction", "Sweep direction", 0, listOf("Low to high", "High to low"),
                 "Low to high: basins are drawn first and peaks last.", "Sweep"),
             Param("holdSec", "Hold when complete (s)", 5f, 0f, 120f, 1f, "", "Sweep"),
             Param("fadeSec", "Fade out (s)", 2.5f, 0.5f, 10f, 0.5f, "", "Sweep"),
-            Param("riseLevels", "Line fade-in", 1.5f, 0f, 6f, 0.25f,
-                "A new line fades in while the sweep travels this many contour levels past it.", "Sweep"),
+            Param("lineFadeSec", "Line fade-in (s)", 0.6f, 0f, 3f, 0.1f,
+                "Seconds each new line takes to fade in. Lines are drawn at a steady rate: the sweep time is " +
+                    "shared equally between all contour levels.", "Sweep"),
             Param("glowBright", "New-line glow", 0.9f, 0f, 2f, 0.05f, "Extra brightness of freshly drawn lines.", "Sweep"),
             Param("glowLevels", "Glow length", 2.5f, 0.25f, 10f, 0.25f, "How many levels behind the sweep still glow.", "Sweep"),
         )
@@ -68,21 +84,28 @@ object SceneParams {
                 "Tints lines by elevation: deep = blue, middle = white, high = amber.", "Height"),
             Param("lowDim", "Dim low lines", 0f, 0f, 0.95f, 0.05f,
                 "Darkens lines toward the lowest elevation, so peaks stand out brightest.", "Height"),
-        )
+        ) + if (earth) listOf(
+            toggleParam("earthColors", "Earth colours", false,
+                "Sea-floor lines blue, land green, lines above the snow line white (overrides Colour by height).", "Height"),
+            Param("snowLine", "Snow line at equator (m)", 4000f, 500f, 8000f, 250f,
+                "Lines above this are white. It drops toward the poles (about half at 50°, so the Alps get white tips " +
+                    "and the Greenland and Antarctic ice sheets are white).", "Height"),
+        ) else emptyList()
         val interval = if (zoom) listOf(
-            Param("autoDensity", "Contour density", 0.3f, 0.05f, 1f, 0.05f,
+            Param("autoDensity", "Contour density", if (earth) 0.15f else 0.3f, 0.05f, 1f, 0.05f,
                 "Zoom picks a contour interval per window; higher = more, closer lines.", "Lines"),
             Param("minInterval", "Minimum interval (m)", 50f, 10f, 500f, 10f, "", "Lines"),
         ) else listOf(
-            Param("interval", "Contour interval (m)", if (lit) 800f else 2000f, 100f, 5000f, 100f,
+            Param("interval", "Contour interval (m)", if (lit) 800f else if (pulse) 1000f else 2000f, 100f, 5000f, 100f,
                 "Metres of elevation between neighbouring lines.", "Lines"),
         )
         val lines = interval + listOf(
             Param("majorEvery", "Major line every", 5f, 1f, 20f, 1f, "Every Nth level is drawn thicker and brighter.", "Lines"),
             Param("lineWidth", "Line width (px)", 1.4f, 0.5f, 5f, 0.1f, "", "Lines"),
             Param("majorWidth", "Major line width (px)", 2.2f, 0.5f, 6f, 0.1f, "", "Lines"),
-            Param("minorBright", "Line brightness", if (lit) 0.7f else 0.45f, 0f, 1f, 0.05f, "", "Lines"),
-            Param("majorBright", "Major line brightness", if (lit) 1f else 0.8f, 0f, 1f, 0.05f, "", "Lines"),
+            Param("minorBright", "Line brightness", if (lit) 0.7f else if (pulse) 0.15f else 0.45f, 0f, 1f, 0.05f,
+                if (pulse) "Resting brightness between pulses (0 = lines only show while a pulse passes)." else "", "Lines"),
+            Param("majorBright", "Major line brightness", if (lit) 1f else if (pulse) 0.3f else 0.8f, 0f, 1f, 0.05f, "", "Lines"),
             Param("denseMax", "Dense area grey cap", 0.35f, 0f, 1f, 0.05f,
                 "Brightness cap where lines are too close to draw separately (steep slopes, globe edge).", "Lines"),
         )
@@ -91,7 +114,7 @@ object SceneParams {
             Param("windowMaxDeg", "Window size max (°)", 9f, 1f, 30f, 0.5f, "", "View"),
             Param("driftZoom", "Zoom drift", 0.08f, 0f, 0.3f, 0.01f, "How much the view zooms in during a cycle.", "View"),
             Param("driftPan", "Pan drift", 0.03f, 0f, 0.1f, 0.01f, "How far the view pans during a cycle.", "View"),
-            Param("windowBlur", "Terrain smoothing", 0.8f, 0f, 3f, 0.1f, "Blur of the height data (source pixels); next window.", "View"),
+            Param("windowBlur", "Terrain smoothing", if (earth) 1.6f else 0.8f, 0f, 3f, 0.1f, "Blur of the height data (source pixels); next window.", "View"),
         ) else listOf(
             Param("revSec", "Rotation period (s)", if (lit) 420f else 360f, 30f, 1800f, 30f, "", "View"),
             Param("tiltDeg", "Tilt (°)", 18f, -60f, 60f, 2f, "North pole tipped toward the viewer.", "View"),
@@ -102,10 +125,24 @@ object SceneParams {
             toggleParam("litSweep", "Sweep in lit mode", false, "Off = all lines always shown.", "Light"),
             Param("lightAzDeg", "Light direction (°)", -45f, -180f, 180f, 5f, "", "Light"),
             Param("lightElDeg", "Light elevation (°)", 55f, 0f, 90f, 5f, "", "Light"),
-            Param("litSlope", "Slope threshold", 0.03f, 0.005f, 0.2f, 0.005f, "Slopes gentler than this count as flat.", "Light"),
+            Param("litSlope", "Slope threshold", if (earth) 0.01f else 0.03f, 0.005f, 0.2f, 0.005f, "Slopes gentler than this count as flat.", "Light"),
             Param("litSoft", "Lit/unlit softness", 0.3f, 0.05f, 1f, 0.05f, "", "Light"),
             Param("litAmbient", "Unlit line brightness", 0.04f, 0f, 0.5f, 0.02f, "", "Light"),
         ) else emptyList()
-        return sweep + height + lines + view + light
+        val names = if (zoom && !earth) listOf(
+            toggleParam("craterNames", "Crater names", false, "Label the larger named craters in view (IAU names); each name appears with its crater's floor contour.", "Names"),
+            Param("labelMax", "Max names", 8f, 1f, CraterLabels.MAX_LABELS.toFloat(), 1f,
+                "Most names per window (largest craters first, overlapping names skipped). From the next window.", "Names"),
+            Param("labelMinSize", "Smallest named crater", 0.05f, 0.01f, 0.3f, 0.01f,
+                "Crater diameter as a fraction of the view height. From the next window.", "Names"),
+            Param("labelSize", "Name size (px)", 20f, 10f, 40f, 1f, "From the next window.", "Names"),
+            Param("labelBright", "Name brightness", 0.55f, 0.1f, 1f, 0.05f, "", "Names"),
+        ) else if (zoom) listOf(
+            toggleParam("placeNames", "Place name", true,
+                "Name the country in view at the bottom of the screen (the sea, if there is little land).", "Names"),
+            Param("placeSize", "Name size (px)", 26f, 12f, 48f, 1f, "From the next window.", "Names"),
+            Param("placeBright", "Name brightness", 0.75f, 0.1f, 1f, 0.05f, "", "Names"),
+        ) else emptyList()
+        return sweep + height + lines + view + light + names
     }
 }

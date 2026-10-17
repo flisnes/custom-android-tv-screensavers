@@ -16,6 +16,8 @@ import javax.microedition.khronos.opengles.GL10
 import kotlin.concurrent.thread
 import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.acos
+import kotlin.math.asin
 import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.exp
@@ -27,16 +29,21 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * Topographic contour maps of the Moon (white lines on black), from the LRO LOLA height model in
- * assets/moon (see tools/moon_data.py). Three modes share one fragment shader (assets/moon/moon.frag,
+ * Topographic contour maps of the Moon or the Earth (white lines on black): the Moon from the LRO LOLA
+ * height model in assets/moon (tools/moon_data.py), the Earth from NOAA ETOPO 2022 land + sea-floor relief
+ * in assets/earth (tools/earth_data.py). Every mode shares one fragment shader (assets/moon/moon.frag,
  * also used verbatim by preview/moon.html). All look and timing values are live [Tweaks] (defaults in
  * [SceneParams.moon]), adjusted from the preview's tweak panel on the TV:
  *
  *  ZOOM  — a random window of the surface; a sweep rises from the lowest to the highest point and
  *          draws each contour as it passes, holds, fades out, and picks a new window.
+ *          Every contour level gets the same share of the sweep time, and each fades in over
+ *          `lineFadeSec`, so no stretch of the sweep rushes or pops.
  *  GLOBE — a slowly spinning orthographic globe with the same continuous sweep.
  *  LIT   — the spinning globe with a light behind the camera, off to one side: only the contour
  *          segments on slopes that face the light are drawn, like a hatched engraving.
+ *  PULSE — the spinning globe with every line always drawn at a dim resting level, while pulses of
+ *          light run endlessly through the elevations (no sweep / hold / fade-out cycle).
  *
  * Requires a GL ES 3.0 context (R16F height textures, `#version 300 es`).
  */
@@ -44,13 +51,19 @@ class MoonRenderer(
     private val context: Context,
     private val mode: Mode,
     private val tweaks: Tweaks,
+    private val body: Body = Body.MOON,
 ) : GLSurfaceView.Renderer, SceneStatus {
 
-    enum class Mode(val id: Int) { ZOOM(0), GLOBE(1), LIT(2) }
+    enum class Mode(val id: Int) { ZOOM(0), GLOBE(1), LIT(2), PULSE(1) }   // id = shader uMode
+
+    /** Which height data: assets/<dir>/<dir>.json describes the grids in that folder. */
+    enum class Body(val dir: String) { MOON("moon"), EARTH("earth") }
 
     // ---- fixed settings (everything adjustable is in [tweaks], see SceneParams.moon) ---------------
-    private val latMaxDeg = 52f
-    private val pickBest = 3
+    private val latMaxDeg get() = zoomGrid.latMax - 12f    // zoom window centres stay this far inside the grid
+    private val candidates = 3          // windows tried per pick; the flattest is dropped, one of the rest is shown
+    private val recentCount = 20         // window centres remembered so new picks keep away from them
+    private val recentSpacing = 1.5f     // ... by at least this many window half-heights (the larger of the two)
     private val wobbleSec = 600f
 
     // ---- GL state -------------------------------------------------------------------------------
@@ -64,8 +77,9 @@ class MoonRenderer(
     private var maxTex = 4096
 
     // ---- data -----------------------------------------------------------------------------------
-    private class Grid(val width: Int, val height: Int, val ppd: Float, val latMin: Float, val latMax: Float)
+    private class Grid(val file: String, val width: Int, val height: Int, val ppd: Float, val latMin: Float, val latMax: Float)
     private var scale = 0.5f
+    private var radius = 1737400f                        // body radius (m), for the lit mode's slopes
     private lateinit var globeGrid: Grid
     private lateinit var zoomGrid: Grid
     private var zoomData: ShortBuffer? = null           // memory-mapped 32 px/deg grid
@@ -77,12 +91,18 @@ class MoonRenderer(
         val gradRef: Float = 0f,
         val lat: Float = 0f, val lon: Float = 0f, val hh0: Float = 0f, val extract: FloatArray = FloatArray(4),
     ) {
+        var names: CraterLabels.Batch? = null           // moon zoom: crater names for this window
+        var place: PlaceNames.Batch? = null             // earth zoom: the country / sea in view
         val lo = quant.first()
         val hi = quant.last()
     }
     @Volatile private var pending: Field? = null
     @Volatile private var loading = false
     private var current: Field? = null
+    /** Crater names: only the moon close-up has them. */
+    private val labels = if (body == Body.MOON && mode == Mode.ZOOM) CraterLabels(context) else null
+    /** Place name: only the Earth close-up has it. */
+    private val places = if (body == Body.EARTH && mode == Mode.ZOOM) PlaceNames(context) else null
 
     // ---- animation --------------------------------------------------------------------------------
     private enum class Phase { SWEEP, HOLD, FADE }
@@ -92,6 +112,7 @@ class MoonRenderer(
     private var simT = 0f
     private var lastNanos = 0L
     private val rnd = java.util.Random()
+    private val recent = ArrayDeque<FloatArray>()      // (lat, lon, half-height) radians of the last zoom windows
     private var lastSweepH = Float.NaN
 
     // ---- readout for the preview's info overlay (written on the GL thread) -------------------------
@@ -127,10 +148,12 @@ class MoonRenderer(
 
         val t = IntArray(1); GLES30.glGenTextures(1, t, 0); tex = t[0]
         texW = 0; texH = 0
+        labels?.initGl(::link)
+        places?.initGl(::link)
 
         readManifest()
         current = null; pending = null; loading = false
-        phase = Phase.SWEEP; phaseT = 0f; cycleT = 0f; simT = 0f; lastNanos = 0L; rotation = 0f
+        phase = Phase.SWEEP; phaseT = 0f; cycleT = 0f; simT = 0f; lastNanos = 0L; rotation = 0f; pulsePos = 0f
         if (mode == Mode.ZOOM) {
             // Window extraction needs the viewport aspect; kicked off from onSurfaceChanged.
         } else {
@@ -148,23 +171,26 @@ class MoonRenderer(
         val now = System.nanoTime()
         val dt = if (lastNanos == 0L) 0f else min((now - lastNanos) / 1e9f, 0.1f)
         lastNanos = now
-        simT += dt
 
         // Swap in a freshly prepared field (first load, or the next zoom window after a fade).
         pending?.let { f ->
             if (current == null || phase == Phase.FADE && phaseT >= fadeSec) {
                 upload(f); f.data = null; current = f; pending = null
+                f.names?.let { labels?.show(it) }
+                f.place?.let { places?.show(it) }
                 phase = Phase.SWEEP; phaseT = 0f; cycleT = 0f
             }
         }
         val cur = current
         if (cur == null) { GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT); return }
+        simT += dt      // counts from the first drawn frame, so the 2 s fade-in isn't used up while loading
 
         val t = tweaks
-        val sweepSec = t["sweepSec"]; val holdSec = t["holdSec"]
         val interval = intervalFor(cur)
         val down = t.int("direction") == 1          // sweep from the highest point down
-        val sweepOn = mode != Mode.LIT || t.bool("litSweep")
+        val sweepOn = mode == Mode.ZOOM || mode == Mode.GLOBE || mode == Mode.LIT && t.bool("litSweep")
+        val sweepSec = if (sweepOn) t["sweepSec"] else 1f
+        val holdSec = if (sweepOn) t["holdSec"] else 0f
         var sweepH = 1e9f
         var fade = min(1f, simT / 2f)
         var progress = 0f
@@ -181,13 +207,11 @@ class MoonRenderer(
                     else phaseT = fadeSec   // stay black until the next window is ready
                 }
             }
-            var p = if (phase == Phase.SWEEP) min(phaseT / sweepSec, 1f) else 1f
-            val e = p * p * (3f - 2f * p); p += (e - p) * t["ease"]
-            val q = if (down) 1f - p else p
-            // Pacing: 0 = equal surface area per second (quantiles), 1 = equal metres per second (steady line rate).
-            val byArea = quantile(cur.quant, q)
-            val byHeight = cur.lo + (cur.hi - cur.lo) * q
-            sweepH = if (p >= 1f) (if (down) -1e9f else 1e9f) else byArea + (byHeight - byArea) * t["pacing"]
+            // Constant level clock: level i of n is crossed at (i + 0.5) / n of the sweep time. It keeps
+            // running through HOLD and FADE so the last lines finish fading in and their glow decays.
+            val crossed = cycleT * levelRate(cur, interval, sweepSec)
+            sweepH = if (down) (floor(cur.hi / interval) + 0.5f - crossed) * interval
+                     else (ceil(cur.lo / interval) - 0.5f + crossed) * interval
             fade = when (phase) {
                 Phase.FADE -> max(0f, 1f - phaseT / fadeSec)
                 Phase.SWEEP -> min(1f, phaseT / 1f)
@@ -212,22 +236,50 @@ class MoonRenderer(
         set1f("uMajorBright", t["majorBright"])
         set1f("uSweepH", sweepH)
         set1f("uSweepDir", if (down) -1f else 1f)
-        set1f("uRiseRange", t["riseLevels"] * interval)
-        set1f("uGlowRange", t["glowLevels"] * interval + 1e-3f)
+        if (mode == Mode.PULSE) {
+            // Fronts move pulseSpeed metres of elevation per second; the position wraps every spacing.
+            val spacing = t["pulseSpacing"]
+            pulsePos = (pulsePos + dt * t["pulseSpeed"] * if (down) -1f else 1f).mod(spacing)
+            set1i("uPulse", 1)
+            set1f("uPulsePos", pulsePos)
+            set1f("uPulseSpacing", spacing)
+            set1f("uRiseRange", t["lineFadeSec"] * t["pulseSpeed"])
+            set1f("uGlowRange", t["pulseTrail"] + 1e-3f)
+        } else {
+            set1i("uPulse", 0)
+            set1f("uRiseRange", t["lineFadeSec"] * levelRate(cur, interval, sweepSec) * interval)
+            set1f("uGlowRange", t["glowLevels"] * interval + 1e-3f)
+        }
         set1f("uGlowBright", t["glowBright"])
         set1f("uDenseMax", t["denseMax"])
         set1f("uFade", fade)
+        set1f("uBodyR", radius)
         GLES30.glUniform2f(u["uHRange"]!!, quantile(cur.quant, 0.005f), quantile(cur.quant, 0.995f))
         set1f("uTint", t["tint"])
         set1f("uLowDim", t["lowDim"])
+        set1f("uEarthCol", if (body == Body.EARTH && t.bool("earthColors")) 1f else 0f)
+        if (body == Body.EARTH) set1f("uSnowLine", t["snowLine"])
 
         if (mode == Mode.ZOOM) {
             val z = 1f - t["driftZoom"] * progress
             val ang = cur.lon * 7f + cur.lat * 3f
             val pan = t["driftPan"] * (progress - 0.5f) * cur.hh0 * 2f
-            GLES30.glUniform2f(u["uZoomCenter"]!!, cur.lat + sin(ang) * pan, cur.lon + cos(ang) * pan / cos(cur.lat))
+            val cLat = cur.lat + sin(ang) * pan
+            val cLon = cur.lon + cos(ang) * pan / cos(cur.lat)
+            GLES30.glUniform2f(u["uZoomCenter"]!!, cLat, cLon)
             set1f("uZoomHalfH", cur.hh0 * z)
             GLES30.glUniform4f(u["uExtract"]!!, cur.extract[0], cur.extract[1], cur.extract[2], cur.extract[3])
+            GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
+            if (labels != null && t.bool("craterNames")) {
+                // A name fades in with its crater's floor contour, exactly as moon.frag fades in that line.
+                val rise = max(t["lineFadeSec"] * levelRate(cur, interval, sweepSec) * interval, 1e-3f)
+                val dir = if (down) -1f else 1f
+                labels.draw(cLat, cLon, cur.hh0 * z, vw, vh, fade, t["labelBright"], interval) { level ->
+                    smoothstep(0f, rise, (sweepH - level) * dir)
+                }
+            }
+            if (places != null && t.bool("placeNames")) places.draw(vw, vh, fade, t["placeBright"])
+            return
         } else {
             rotation += dt * 2f * PI.toFloat() / t["revSec"]
             set1f("uRotation", rotation)
@@ -243,20 +295,25 @@ class MoonRenderer(
     }
 
     private var rotation = 0f
+    private var pulsePos = 0f
     private val fadeSec get() = tweaks["fadeSec"]
+
+    /** Contour levels crossed per second: every level between the field's extremes gets the same time. */
+    private fun levelRate(f: Field, interval: Float, sweepSec: Float): Float =
+        (floor(f.hi / interval) - ceil(f.lo / interval) + 1f).coerceAtLeast(1f) / sweepSec
 
     private fun intervalFor(f: Field): Float =
         if (mode == Mode.ZOOM) max(tweaks["minInterval"], niceInterval(f.gradRef / tweaks["autoDensity"]))
         else tweaks["interval"]
 
     private fun updateStatus(cur: Field, sweepOn: Boolean, sweepH: Float, interval: Float, progress: Float, dt: Float) {
-        val sweeping = sweepOn && phase == Phase.SWEEP && abs(sweepH) < 1e8f
+        val sweeping = sweepOn && phase == Phase.SWEEP
         if (sweeping && !lastSweepH.isNaN() && dt > 0f) {
             val r = abs(sweepH - lastSweepH) / dt
             stRate += (r - stRate) * min(1f, dt * 2f)       // ~0.5 s smoothing
         }
         lastSweepH = if (sweeping) sweepH else Float.NaN
-        stPhase = if (!sweepOn) "STATIC" else phase.name
+        stPhase = if (mode == Mode.PULSE) "PULSE" else if (!sweepOn) "STATIC" else phase.name
         stProgress = progress; stSweepH = sweepH; stLo = cur.lo; stHi = cur.hi; stInterval = interval
     }
 
@@ -266,9 +323,10 @@ class MoonRenderer(
     // ---- loading ----------------------------------------------------------------------------------
 
     private fun readManifest() {
-        val j = JSONObject(context.assets.open("moon/moon.json").bufferedReader().readText())
+        val j = JSONObject(context.assets.open("${body.dir}/${body.dir}.json").bufferedReader().readText())
         scale = j.getDouble("scale_m_per_dn").toFloat()
-        fun grid(o: JSONObject) = Grid(o.getInt("width"), o.getInt("height"), o.getDouble("ppd").toFloat(),
+        radius = j.optDouble("radius_m", 1737400.0).toFloat()
+        fun grid(o: JSONObject) = Grid("${body.dir}/" + o.getString("file"), o.getInt("width"), o.getInt("height"), o.getDouble("ppd").toFloat(),
             o.getDouble("lat_min").toFloat(), o.getDouble("lat_max").toFloat())
         globeGrid = grid(j.getJSONObject("globe"))
         zoomGrid = grid(j.getJSONObject("zoom"))
@@ -289,7 +347,7 @@ class MoonRenderer(
         val w = if (down) g.width / 2 else g.width
         val h = if (down) g.height / 2 else g.height
         val data = FloatArray(w * h)
-        context.assets.open("moon/ldem_16.bin").use { ins ->
+        context.assets.open(g.file).use { ins ->
             val buf = ByteArray(g.width * 2)
             val row = ShortArray(g.width)
             for (y in 0 until g.height) {
@@ -324,17 +382,17 @@ class MoonRenderer(
         zoomData?.let { return it }
         val bytes: ByteBuffer = try {
             // Stored uncompressed (noCompress "bin"), so it can be memory-mapped straight out of the APK.
-            val afd = context.assets.openFd("moon/ldem_32.bin")
+            val afd = context.assets.openFd(zoomGrid.file)
             val ch = FileInputStream(afd.fileDescriptor).channel
             val mapped = ch.map(FileChannel.MapMode.READ_ONLY, afd.startOffset, afd.length)
             ch.close(); afd.close()
             mapped
         } catch (e: Exception) {
             // Compressed after all: stream it into native memory (outside the Java heap limit).
-            Log.w(TAG, "ldem_32.bin is not mappable, reading it fully", e)
+            Log.w(TAG, "${zoomGrid.file} is not mappable, reading it fully", e)
             val size = zoomGrid.width * zoomGrid.height * 2
             val buf = ByteBuffer.allocateDirect(size)
-            context.assets.open("moon/ldem_32.bin").use { ins ->
+            context.assets.open(zoomGrid.file).use { ins ->
                 val chunk = ByteArray(1 shl 20)
                 while (buf.hasRemaining()) {
                     val n = ins.read(chunk, 0, min(chunk.size, buf.remaining())); if (n < 0) break
@@ -346,22 +404,47 @@ class MoonRenderer(
         return bytes.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().also { zoomData = it }
     }
 
-    /** Pick the roughest of a few random windows and extract it (with margin for the drift). */
+    /**
+     * Pick a window and extract it (with margin for the drift). A few random candidates, uniform by area and away
+     * from the last [recentCount] windows, are extracted; the flattest is dropped (mostly featureless plains or
+     * sea floor) and one of the others is chosen at random. Always taking the roughest kept returning to the
+     * same few rugged regions.
+     */
     private fun pickWindow(): Field {
         val src = mapZoom()
         val aspect = vw.toFloat() / vh
-        var best: Field? = null
-        var bestRough = -1f
-        repeat(pickBest) {
-            val a = tweaks["windowMinDeg"]; val b = max(a, tweaks["windowMaxDeg"])
-            val hhDeg = a + rnd.nextFloat() * (b - a)
-            val latDeg = (rnd.nextFloat() * 2f - 1f) * latMaxDeg
-            val lonDeg = rnd.nextFloat() * 360f
-            val (f, rough) = extractWindow(src, latDeg, lonDeg, hhDeg, aspect)
-            if (rough > bestRough) { best = f; bestRough = rough }
+        val fields = List(candidates) {
+            val (latDeg, lonDeg, hhDeg) = randomCentre()
+            extractWindow(src, latDeg, lonDeg, hhDeg, aspect)
+        }.sortedBy { it.second }
+        val f = fields[1 + rnd.nextInt(fields.size - 1)].first
+        recent.addLast(floatArrayOf(f.lat, f.lon, f.hh0))
+        while (recent.size > recentCount) recent.removeFirst()
+        labels?.let { l ->
+            f.names = l.build(f.lat, f.lon, f.hh0, vw, vh, radius, tweaks.int("labelMax"), tweaks["labelMinSize"],
+                tweaks["labelSize"] * pxScale(), f.data!!, f.w, f.h, f.extract)
         }
-        return best!!
+        places?.let { f.place = it.build(f.lat, f.lon, f.hh0, vw, vh, tweaks["placeSize"] * pxScale()) }
+        return f
     }
+
+    /** A random (lat, lon, half-height) in degrees, uniform by area, not near a recent window (if one can be found). */
+    private fun randomCentre(): Triple<Float, Float, Float> {
+        val a = tweaks["windowMinDeg"]; val b = max(a, tweaks["windowMaxDeg"])
+        var c = Triple(0f, 0f, a)
+        for (attempt in 0 until 30) {
+            val hhDeg = a + rnd.nextFloat() * (b - a)
+            val latDeg = asin((rnd.nextFloat() * 2f - 1f) * sin(latMaxDeg * DEG)) / DEG
+            val lonDeg = rnd.nextFloat() * 360f
+            c = Triple(latDeg, lonDeg, hhDeg)
+            if (recent.none { r -> angle(latDeg * DEG, lonDeg * DEG, r[0], r[1]) < recentSpacing * max(hhDeg * DEG, r[2]) }) break
+        }
+        return c
+    }
+
+    /** Great-circle angle between two (lat, lon) points, radians. */
+    private fun angle(lat1: Float, lon1: Float, lat2: Float, lon2: Float): Float =
+        acos((sin(lat1) * sin(lat2) + cos(lat1) * cos(lat2) * cos(lon1 - lon2)).coerceIn(-1f, 1f))
 
     private fun extractWindow(src: ShortBuffer, latDeg: Float, lonDeg: Float, hhDeg: Float, aspect: Float): Pair<Field, Float> {
         val m = zoomGrid
@@ -406,6 +489,11 @@ class MoonRenderer(
         val gradRef = gr[(gr.size * 0.8f).toInt()] / screenPxPerSrcPx
         val extract = floatArrayOf(col0 / pxPerRad, m.latMax * DEG - row0 / pxPerRad, w / pxPerRad, h / pxPerRad)
         return Field(w, h, data, q, gradRef, latDeg * DEG, lonDeg * DEG, hhDeg * DEG, extract) to rough
+    }
+
+    private fun smoothstep(a: Float, b: Float, x: Float): Float {
+        val t = ((x - a) / (b - a)).coerceIn(0f, 1f)
+        return t * t * (3f - 2f * t)
     }
 
     private fun quantile(q: FloatArray, p: Float): Float = q[max(0, min(q.size - 1, (p * (q.size - 1)).toInt()))]
@@ -484,7 +572,7 @@ class MoonRenderer(
         private val UNIFORMS = listOf("uHeight", "uRes", "uMode", "uZoomCenter", "uZoomHalfH", "uExtract", "uSmooth", "uRotation",
             "uTilt", "uGlobeRadius", "uLightDir", "uLitSlope", "uLitSoft", "uLitAmbient", "uInterval", "uMajorEvery", "uLineWidth",
             "uMajorWidth", "uMinorBright", "uMajorBright", "uSweepH", "uRiseRange", "uGlowRange", "uGlowBright", "uDenseMax", "uFade",
-            "uSweepDir", "uHRange", "uTint", "uLowDim")
+            "uSweepDir", "uHRange", "uTint", "uLowDim", "uPulse", "uPulsePos", "uPulseSpacing", "uBodyR", "uEarthCol", "uSnowLine")
         private const val VS = """#version 300 es
 void main() {
   vec2 p = vec2(gl_VertexID == 1 ? 3.0 : -1.0, gl_VertexID == 2 ? 3.0 : -1.0);

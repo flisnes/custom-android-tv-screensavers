@@ -1,5 +1,5 @@
 #version 300 es
-// Moon contour-map scenes. Shared verbatim by preview/moon.html (WebGL2) and MoonRenderer.kt (GL ES 3.0).
+// Moon / Earth contour-map scenes. Shared verbatim by preview/moon.html (WebGL2) and MoonRenderer.kt (GL ES 3.0).
 // Heights are in metres, in an R16F texture (globe: full equirectangular sphere; zoom: an extracted window).
 precision highp float;
 precision highp sampler2D;
@@ -37,16 +37,25 @@ uniform float uGlowRange;    // metres below the sweep that still glow
 uniform float uGlowBright;   // extra brightness of freshly-swept lines
 uniform float uDenseMax;     // cap on the grey level where lines are too dense to resolve
 uniform float uFade;         // global multiplier (fade in/out)
+uniform float uBodyR;        // radius of the body (m): 1737.4 km Moon, 6371 km Earth
+
+// Pulse mode (replaces the one-off sweep): pulse fronts every uPulseSpacing metres of elevation travel endlessly
+// in uSweepDir; a line brightens by uGlowBright as a front crosses it (fading in over uRiseRange metres of front
+// travel) and decays over uGlowRange metres behind it. uMinorBright/uMajorBright are the resting brightness.
+uniform int   uPulse;        // 1 = pulse mode
+uniform float uPulsePos;     // metres: position of one pulse front (the others are uPulseSpacing apart)
+uniform float uPulseSpacing; // metres between pulse fronts
 
 // Height cues (both 0 = plain white lines).
 uniform vec2  uHRange;       // metres: low and high end of the elevation ramp
 uniform float uTint;         // 0..1: colour lines by elevation (deep blue -> white -> high amber)
 uniform float uLowDim;       // 0..1: darken lines toward the lowest elevation
+uniform float uEarthCol;     // 0..1: Earth colours by contour level: sea floor blue, land green, snow white
+uniform float uSnowLine;     // metres: snow line at the equator; it drops toward the poles as cos(lat)^1.5
 
 out vec4 fragColor;
 
 const float PI = 3.14159265358979;
-const float MOON_R = 1737400.0;
 
 float sampleH(vec2 uv) { return texture(uHeight, uv).r; }
 
@@ -70,6 +79,14 @@ float sampleHSmooth(vec2 uv) {
 
 float height(vec2 uv) { return uSmooth == 1 ? sampleHSmooth(uv) : sampleH(uv); }
 
+// Pulse envelope for a line at height h: 0 until a front reaches it, then a quick rise and an exponential decay,
+// shifted so it is back at exactly 0 when the next front arrives (no step).
+float pulseEnv(float h) {
+    float b = mod((uPulsePos - h) * uSweepDir, uPulseSpacing);   // metres the latest front has travelled past h
+    float tail = exp(-uPulseSpacing / uGlowRange);
+    return smoothstep(0.0, max(uRiseRange, 1e-3), b) * max(exp(-b / uGlowRange) - tail, 0.0) / (1.0 - tail);
+}
+
 // Line brightness at height h given the per-pixel contour density. Returns 0..1 (pre-fade).
 float contours(float h, float lit) {
     float iv = uInterval;
@@ -89,6 +106,7 @@ float contours(float h, float lit) {
     float past = (uSweepH - levelH) * uSweepDir;          // metres the sweep has travelled beyond this level
     float vis = smoothstep(0.0, max(uRiseRange, 1e-3), past);
     float glow = uGlowBright * exp(-max(past, 0.0) / uGlowRange);
+    if (uPulse == 1) { vis = 1.0; glow = uGlowBright * pulseEnv(levelH); }
     float sparse = cov * vis * min(base + glow, 1.0);
 
     // Where lines are too dense to resolve (steep slopes, the globe's limb): box-filtered average instead of aliasing.
@@ -96,27 +114,37 @@ float contours(float h, float lit) {
     float pastD = (uSweepH - h) * uSweepDir;
     float visD = smoothstep(-0.5 * w * iv, max(w * iv, uRiseRange), pastD);
     float glowD = uGlowBright * exp(-max(pastD, 0.0) / uGlowRange);
+    if (uPulse == 1) { visD = 1.0; glowD = uGlowBright * pulseEnv(h); }
     float dense = avgCov * visD * min(uMinorBright + glowD, 1.0);
 
     float dens = smoothstep(0.4, 0.9, w);
     return mix(sparse, dense, dens) * lit;
 }
 
-vec3 heightColor(float h) {
+vec3 heightColor(float h, float lat) {
     float t = clamp((h - uHRange.x) / max(uHRange.y - uHRange.x, 1.0), 0.0, 1.0);
     vec3 deep = vec3(0.30, 0.50, 1.00), mid = vec3(0.92, 0.94, 1.00), high = vec3(1.00, 0.66, 0.28);
     vec3 ramp = t < 0.5 ? mix(deep, mid, t * 2.0) : mix(mid, high, t * 2.0 - 1.0);
-    return mix(vec3(1.0), ramp, uTint) * (1.0 - uLowDim * (1.0 - t));
+    vec3 col = mix(vec3(1.0), ramp, uTint);
+    if (uEarthCol > 0.0) {
+        // Classified by the line's own level, so each contour has one colour (the 0 m coastline counts as land).
+        float lh = floor(h / uInterval + 0.5) * uInterval;
+        float snow = uSnowLine * pow(max(cos(lat), 0.0), 1.5);
+        vec3 e = lh < 0.0 ? vec3(0.25, 0.55, 1.00) : lh < snow ? vec3(0.35, 0.90, 0.35) : vec3(1.0);
+        col = mix(col, e, uEarthCol);
+    }
+    return col * (1.0 - uLowDim * (1.0 - t));
 }
 
 void main() {
     vec2 px = gl_FragCoord.xy;
     float c = 0.0;
     float hgt = 0.0;
+    float lat = 0.0;
 
     if (uMode == 0) {
         vec2 s = (px - 0.5 * uRes) / (0.5 * uRes.y);        // y in -1..1, x in -aspect..aspect
-        float lat = uZoomCenter.x + s.y * uZoomHalfH;
+        lat = uZoomCenter.x + s.y * uZoomHalfH;
         float lon = uZoomCenter.y + s.x * uZoomHalfH / cos(lat);
         vec2 uv = vec2((lon - uExtract.x) / uExtract.z, (uExtract.y - lat) / uExtract.w);
         hgt = height(uv);
@@ -131,7 +159,7 @@ void main() {
             // Body frame: tip the pole toward the camera by uTilt (rotate about x).
             float ct = cos(uTilt), st = sin(uTilt);
             vec3 b = vec3(n.x, n.y * ct - n.z * st, n.y * st + n.z * ct);
-            float lat = asin(clamp(b.y, -1.0, 1.0));
+            lat = asin(clamp(b.y, -1.0, 1.0));
             float lon = atan(b.x, b.z) + uRotation;
             vec2 uv = vec2(lon / (2.0 * PI), 0.5 - lat / PI);
 
@@ -141,8 +169,8 @@ void main() {
                 vec2 e = 1.0 / ts;
                 float hE = sampleH(uv + vec2(e.x, 0.0)), hW = sampleH(uv - vec2(e.x, 0.0));
                 float hS = sampleH(uv + vec2(0.0, e.y)), hN = sampleH(uv - vec2(0.0, e.y));
-                float mPerTexLon = 2.0 * PI * MOON_R * max(cos(lat), 0.05) / ts.x;
-                float mPerTexLat = PI * MOON_R / ts.y;
+                float mPerTexLon = 2.0 * PI * uBodyR * max(cos(lat), 0.05) / ts.x;
+                float mPerTexLat = PI * uBodyR / ts.y;
                 float dE = (hE - hW) / (2.0 * mPerTexLon);          // uphill slope towards east
                 float dN = (hN - hS) / (2.0 * mPerTexLat);          // uphill slope towards north
                 vec3 axis = vec3(0.0, ct, -st);                      // body north pole in view space
@@ -163,5 +191,5 @@ void main() {
             c = contours(hgt, lit) * edge;
         }
     }
-    fragColor = vec4(heightColor(hgt) * (c * uFade), 1.0);
+    fragColor = vec4(heightColor(hgt, lat) * (c * uFade), 1.0);
 }

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Moon contour preview</title>
+<title>Contour preview</title>
 <style>
   html, body { margin: 0; height: 100%; background: #000; color: #ccc; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
   canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
@@ -20,10 +20,14 @@
   .row button { flex: 1; background: #222; color: #ccc; border: 1px solid #444; padding: 5px; cursor: pointer; border-radius: 4px; }
   #status { color: #888; margin-top: 6px; white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 11px; }
   #hint { position: fixed; left: 12px; bottom: 10px; color: #555; font-size: 11px; }
+  /* Map lettering, as on the TV (MapText.kt) */
+  @font-face { font-family: Jost; font-weight: 500; src: url(../app/src/main/assets/fonts/Jost-Medium.ttf); }
+  @font-face { font-family: Jost; font-weight: 500; font-style: italic; src: url(../app/src/main/assets/fonts/Jost-MediumItalic.ttf); }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
+<canvas id="names" style="position: fixed; left: 0; top: 0; pointer-events: none"></canvas>
 <div id="panel">
   <div class="tabs">
     <button data-scene="zoom">Zoom sweep</button>
@@ -44,10 +48,12 @@
 // Serve the repo root (python -m http.server) and open /preview/moon.html — the page fetches the
 // shader and the height maps from app/src/main/assets/moon/. URL params for deterministic shots:
 //   ?scene=zoom|globe|lit  &seed=N  &t=SECONDS (fixed time)  &lat=..&lon=..&hh=.. (zoom window, deg)
-//   &sweep=0..1 (force sweep progress)  &panel=0
+//   &sweep=0..1 (force sweep progress)  &panel=0  &body=earth (Earth height maps from assets/earth/)
 // ---------------------------------------------------------------------------------------------
-const ASSETS = '../app/src/main/assets/moon/';
 const Q = new URLSearchParams(location.search);
+const BODY = Q.get('body') === 'earth' ? 'earth' : 'moon';
+const SHADER = '../app/src/main/assets/moon/moon.frag';
+const ASSETS = '../app/src/main/assets/' + BODY + '/';
 
 // Defaults mirror MoonRenderer.kt. [name, default, min, max, step, note]
 const SHARED = [
@@ -58,12 +64,11 @@ const SHARED = [
   ['majorBright', 0.8, 0, 1, 0.01],
   ['glowBright', 0.9, 0, 2, 0.05, 'extra brightness of freshly swept lines'],
   ['glowLevels', 2.5, 0, 10, 0.25, 'glow fades over this many levels'],
-  ['riseLevels', 1.5, 0, 6, 0.1, 'each line fades in while the sweep travels this many levels past it'],
+  ['lineFadeSec', 0.6, 0, 3, 0.1, 'seconds each new line takes to fade in'],
   ['denseMax', 0.35, 0, 1, 0.05, 'grey cap where lines merge'],
   ['sweepSec', 30, 3, 120, 1, 'min to max sweep duration'],
   ['holdSec', 5, 0, 30, 0.5],
   ['fadeSec', 2.5, 0, 10, 0.1],
-  ['ease', 0.6, 0, 1, 0.05, '0 = linear in area, 1 = strong ease in/out'],
 ];
 const SCENES = {
   zoom: { mode: 0, params: [
@@ -77,7 +82,7 @@ const SCENES = {
     ['driftZoom', 0.08, 0, 0.3, 0.01, 'zoom-in over the cycle (fraction)'],
     ['driftPan', 0.03, 0, 0.1, 0.005, 'pan over the cycle (fraction of height)'],
     ['smooth', 1, 0, 1, 1, 'bicubic sampling'],
-    ['pickBest', 3, 1, 8, 1, 'candidates per pick (keeps the roughest)'],
+    ['candidates', 3, 2, 8, 1, 'candidates per pick (drops the flattest, picks one of the rest)'],
     ...SHARED ] },
   globe: { mode: 1, params: [
     ['interval', 2000, 50, 4000, 10, 'contour interval (m)'],
@@ -109,6 +114,8 @@ const SCENES = {
 for (const s of Object.values(SCENES)) { s.values = {}; for (const p of s.params) s.values[p[0]] = p[1]; }
 // Lit mode shows far fewer segments, so its lines are brighter (MoonRenderer.kt does the same).
 SCENES.lit.values.minorBright = 0.7; SCENES.lit.values.majorBright = 1.0;
+// Earth zoom grid reaches +-72 deg, so window centres may go to 60 (MoonRenderer: grid lat_max - 12).
+if (BODY === 'earth') SCENES.zoom.values.latMax = 60;
 // URL overrides for any param: ?p.interval=80
 for (const [k, val] of Q.entries()) if (k.startsWith('p.')) for (const s of Object.values(SCENES)) if (k.slice(2) in s.values) s.values[k.slice(2)] = parseFloat(val);
 
@@ -128,7 +135,7 @@ let prog, uni = {}, data = {}, tex = {}, quant = {};
 const unis = ['uHeight','uRes','uMode','uZoomCenter','uZoomHalfH','uExtract','uSmooth','uRotation','uTilt','uGlobeRadius',
   'uLightDir','uLitSlope','uLitSoft','uLitAmbient','uInterval','uMajorEvery','uLineWidth','uMajorWidth','uMinorBright',
   'uMajorBright','uSweepH','uRiseRange','uGlowRange','uGlowBright','uDenseMax','uFade',
-  'uSweepDir','uHRange','uTint','uLowDim'];
+  'uSweepDir','uHRange','uTint','uLowDim','uBodyR','uEarthCol','uSnowLine'];
 
 async function fetchBuf(url, label) {
   status('loading ' + label + '…');
@@ -137,18 +144,117 @@ async function fetchBuf(url, label) {
 }
 
 async function init() {
-  const fs = await (await fetch(ASSETS + 'moon.frag')).text();
+  const fs = await (await fetch(SHADER)).text();
   const vs = '#version 300 es\nvoid main(){ vec2 p = vec2(gl_VertexID==1?3.0:-1.0, gl_VertexID==2?3.0:-1.0); gl_Position=vec4(p,0,1); }';
   prog = link(vs, fs);
   for (const u of unis) uni[u] = gl.getUniformLocation(prog, u);
-  data.manifest = await (await fetch(ASSETS + 'moon.json')).json();
+  data.manifest = await (await fetch(ASSETS + BODY + '.json')).json();
   data.globe = new Int16Array(await fetchBuf(ASSETS + data.manifest.globe.file, 'globe map'));
   data.zoom = new Int16Array(await fetchBuf(ASSETS + data.manifest.zoom.file, 'zoom map'));
+  if (NAMES.on) NAMES.craters = (await (await fetch(ASSETS + 'craters.tsv')).text()).trim().split('\n').map(l => {
+    const p = l.split('\t'); return { name: p[0], lat: +p[1] * Math.PI / 180, lon: +p[2] * Math.PI / 180, d: +p[3] }; });
+  if (PLACE.on) {
+    PLACE.places = (await (await fetch(ASSETS + 'places.tsv')).text()).trim().split('\n').map(l => l.split('\t'));
+    const gz = (await fetch(ASSETS + 'places.grid')).body.pipeThrough(new DecompressionStream('gzip'));
+    PLACE.grid = new Uint16Array(await new Response(gz).arrayBuffer());
+  }
+  await document.fonts.load('500 20px Jost'); await document.fonts.load('italic 500 20px Jost');
   quant.globe = quantiles(data.globe, data.manifest.globe, 1 << 18);
   buildControls(); setScene(scene);
   status('ready');
-  document.title = 'Moon contour preview (ready)';
+  document.title = 'Contour preview (ready)';
   requestAnimationFrame(frame);
+}
+
+// --- map lettering (mirrors MapText.kt): Jost Medium, white letters with a black outline ----------------
+const PEN_OUTLINE = 0.22;   // ems
+const penFont = (size, italic) => `${italic ? 'italic ' : ''}500 ${size}px Jost`;
+function penWidth(text, size, tracking) {
+  nctx.font = penFont(size, false); nctx.letterSpacing = `${tracking * size}px`;
+  return nctx.measureText(text).width + 2 * Math.ceil(size * (PEN_OUTLINE / 2 + 0.06));
+}
+function penDraw(text, x, y, size, alpha, bright, { italic = false, tracking = 0.04 } = {}) {   // centred on (x, y), y down
+  if (alpha <= 0) return;
+  nctx.font = penFont(size, italic); nctx.letterSpacing = `${tracking * size}px`;
+  nctx.textAlign = 'center'; nctx.textBaseline = 'middle'; nctx.lineJoin = 'round'; nctx.lineWidth = size * PEN_OUTLINE;
+  nctx.strokeStyle = `rgba(0,0,0,${alpha})`; nctx.strokeText(text, x, y);
+  const b = Math.round(255 * bright); nctx.fillStyle = `rgba(${b},${b},${b},${alpha})`; nctx.fillText(text, x, y);
+}
+
+// --- crater names (moon zoom; mirrors CraterLabels.kt; TV tweak "craterNames"): ?craterNames=1 ----------
+// Each name fades in with the contour line at the bottom of its crater.
+const NAMES = { on: BODY === 'moon' && Q.get('craterNames') === '1', max: 8, minFrac: 0.05, size: 20, bright: 0.55, list: [], craters: [] };
+const namesCanvas = document.getElementById('names'), nctx = namesCanvas.getContext('2d');
+const wrapPi = (a) => { let d = a % (2 * Math.PI); if (d > Math.PI) d -= 2 * Math.PI; else if (d < -Math.PI) d += 2 * Math.PI; return d; };
+function projectName(lat, lon, cLat, cLon, hh, W, H) {
+  return [W / 2 + wrapPi(lon - cLon) * Math.cos(lat) / hh * H / 2, H / 2 + (lat - cLat) / hh * H / 2];   // y up
+}
+function floorHeight(c, w) {   // lowest height within 0.3 diameters of the centre (the crater floor)
+  const ex = w.extract, rLat = 0.3 * c.d * 1000 / (data.manifest.radius_m || 1737400), rLon = rLat / Math.max(Math.cos(c.lat), 0.05);
+  const lon = w.lon + wrapPi(c.lon - w.lon);
+  const x0 = Math.max(0, Math.floor((lon - rLon - ex[0]) / ex[2] * w.w)), x1 = Math.min(w.w - 1, Math.ceil((lon + rLon - ex[0]) / ex[2] * w.w));
+  const y0 = Math.max(0, Math.floor((ex[1] - c.lat - rLat) / ex[3] * w.h)), y1 = Math.min(w.h - 1, Math.ceil((ex[1] - c.lat + rLat) / ex[3] * w.h));
+  let lo = Infinity;
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const dy = (ex[1] - (y + 0.5) / w.h * ex[3] - c.lat) / rLat, dx = (ex[0] + (x + 0.5) / w.w * ex[2] - lon) / rLon;
+    if (dx * dx + dy * dy <= 1) lo = Math.min(lo, w.f32[y * w.w + x]);
+  }
+  return lo === Infinity ? w.f32[((y0 + y1) >> 1) * w.w + ((x0 + x1) >> 1)] : lo;
+}
+function pickNames(w) {
+  NAMES.list = [];
+  pickPlace(w);
+  if (!NAMES.on) return;
+  const W = canvas.width, H = canvas.height, size = NAMES.size * Math.max(1, H / 1080), margin = 0.06 * H;
+  const viewKm = 2 * w.hh0 * (data.manifest.radius_m || 1737400) / 1000;
+  const bh = Math.ceil(size * 1.2 + 2 * Math.ceil(size * (PEN_OUTLINE / 2 + 0.06)));
+  const rects = [];
+  for (const c of NAMES.craters) {
+    if (NAMES.list.length >= NAMES.max || c.d < NAMES.minFrac * viewKm) break;
+    const [x, y] = projectName(c.lat, c.lon, w.lat, w.lon, w.hh0, W, H);
+    if (x < margin || x > W - margin || y < margin || y > H - margin) continue;
+    const bw = penWidth(c.name, size, 0.04);
+    const r = [x - bw / 2, y - bh / 2, x + bw / 2, y + bh / 2];
+    if (rects.some(o => r[0] < o[2] && o[0] < r[2] && r[1] < o[3] && o[1] < r[3])) continue;
+    rects.push(r); NAMES.list.push({ ...c, floorH: floorHeight(c, w) });
+  }
+}
+
+// --- place name (earth zoom; mirrors PlaceNames.kt; TV tweak "placeNames", on by default): ?placeNames=0 hides it --
+const PLACE = { on: BODY === 'earth' && Q.get('placeNames') !== '0', size: 26, bright: 0.75, places: [], grid: null, name: null, sea: false };
+function pickPlace(w) {
+  PLACE.name = null;
+  if (!PLACE.on || !PLACE.grid) return;
+  const N = 32, PPD = 4, GW = 360 * PPD, GH = 180 * PPD, aspect = canvas.width / canvas.height, D = 180 / Math.PI;
+  const counts = new Map(); let land = 0, total = 0;
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const sy = (j + 0.5) / N * 2 - 1, sx = ((i + 0.5) / N * 2 - 1) * aspect, wgt = Math.exp(-(sx * sx + sy * sy) / (2 * 0.6 * 0.6));
+    const la = w.lat + sy * w.hh0, lo = w.lon + sx * w.hh0 / Math.cos(la);
+    const y = Math.min(GH - 1, Math.max(0, Math.floor((90 - la * D) * PPD))), x = ((Math.floor(lo * D * PPD) % GW) + GW) % GW;
+    const k = PLACE.grid[y * GW + x]; if (!k) continue;
+    counts.set(k, (counts.get(k) || 0) + wgt); total += wgt; if (PLACE.places[k - 1][0] === 'land') land += wgt;
+  }
+  const wantLand = land >= 0.12 * total;
+  let best = 0, bestN = 0;
+  for (const [k, n] of counts) if ((PLACE.places[k - 1][0] === 'land') === wantLand && n > bestN) { best = k; bestN = n; }
+  if (best) { PLACE.name = PLACE.places[best - 1][1].toUpperCase(); PLACE.sea = !wantLand; }
+}
+
+function drawNames(view, fade, reveal) {
+  const W = canvas.width, H = canvas.height;
+  if (namesCanvas.width !== W || namesCanvas.height !== H) { namesCanvas.width = W; namesCanvas.height = H;
+    namesCanvas.style.width = canvas.style.width || '100vw'; namesCanvas.style.height = canvas.style.height || '100vh'; }
+  nctx.clearRect(0, 0, W, H);
+  if (!view) return;
+  const k = Math.max(1, H / 1080);
+  for (const c of NAMES.list) {
+    const [x, y] = projectName(c.lat, c.lon, view[0], view[1], view[2], W, H);
+    penDraw(c.name, x, H - y, NAMES.size * k, fade * reveal(c.floorH), NAMES.bright);
+  }
+  if (PLACE.name) {
+    const size = PLACE.size * k;
+    penDraw(PLACE.name, W / 2, H - 0.07 * H - size * 0.8, size, fade, PLACE.bright, { italic: PLACE.sea, tracking: 0.22 });
+  }
 }
 
 function link(vsSrc, fsSrc) {
@@ -231,19 +337,37 @@ const qAt = (q, p) => q[Math.max(0, Math.min(q.length - 1, Math.floor(p * (q.len
 // --- zoom windows -------------------------------------------------------------------------------
 let win = null;   // { lat, lon (rad), hh0 (rad), w, h, extract: [lon0, lat0, dlon, dlat], quant, roughness }
 let forceWindow = Q.has('lat');   // ?lat=&lon=&hh= pin the window (until N is pressed)
+// As in MoonRenderer.pickWindow: candidates uniform by area and away from the last 20 windows; the flattest
+// is dropped and one of the others is chosen at random.
+const recentWins = [];
+function randomCentre(v) {
+  const D = Math.PI / 180;
+  let c;
+  for (let t = 0; t < 30; t++) {
+    const hhDeg = v.halfHeightMin + rng() * (v.halfHeightMax - v.halfHeightMin);
+    const latDeg = Math.asin((rng() * 2 - 1) * Math.sin(v.latMax * D)) / D, lonDeg = rng() * 360;
+    c = [latDeg, lonDeg, hhDeg];
+    const near = recentWins.some(r => Math.acos(Math.min(1, Math.sin(latDeg * D) * Math.sin(r.lat) +
+      Math.cos(latDeg * D) * Math.cos(r.lat) * Math.cos(lonDeg * D - r.lon))) < 1.5 * Math.max(hhDeg * D, r.hh0));
+    if (!near) break;
+  }
+  return c;
+}
 function pickWindow() {
   const v = SCENES.zoom.values, m = data.manifest.zoom;
   const aspect = canvas.width / canvas.height;
-  let best = null;
-  const forced = forceWindow;
-  for (let k = 0; k < (forced ? 1 : v.pickBest); k++) {
-    const hhDeg = forced && Q.has('hh') ? parseFloat(Q.get('hh')) : v.halfHeightMin + rng() * (v.halfHeightMax - v.halfHeightMin);
-    const latDeg = forced ? parseFloat(Q.get('lat')) : (rng() * 2 - 1) * v.latMax;
-    const lonDeg = forced ? parseFloat(Q.get('lon')) : rng() * 360;
-    const c = extractWindow(latDeg, lonDeg, hhDeg, aspect, m);
-    if (!best || c.roughness > best.roughness) best = c;
+  let best;
+  if (forceWindow) {
+    best = extractWindow(parseFloat(Q.get('lat')), parseFloat(Q.get('lon')), Q.has('hh') ? parseFloat(Q.get('hh')) : v.halfHeightMin, aspect, m);
+  } else {
+    const cs = [];
+    for (let k = 0; k < v.candidates; k++) { const [la, lo, hh] = randomCentre(v); cs.push(extractWindow(la, lo, hh, aspect, m)); }
+    cs.sort((a, b) => a.roughness - b.roughness);
+    best = cs[1 + Math.floor(rng() * (cs.length - 1))];
+    recentWins.push(best); if (recentWins.length > 20) recentWins.shift();
   }
   win = best;
+  pickNames(win);
   if (tex.zoom) gl.deleteTexture(tex.zoom);
   tex.zoom = uploadR16F(best.w, best.h, best.f32, gl.CLAMP_TO_EDGE);
   best.f32 = null;
@@ -285,15 +409,15 @@ function extractWindow(latDeg, lonDeg, hhDeg, aspect, m) {
 
 // --- sweep state machine -------------------------------------------------------------------------
 let phase = 'sweep', phaseT = 0, cycleT = 0, lastNow = null, simT = 0;
-function sweepState(v, q, dt) {
+// Constant level clock, as in MoonRenderer.kt: every contour level gets the same share of the sweep time.
+const levelRate = (q, interval, v) => Math.max(1, Math.floor(q[q.length - 1] / interval) - Math.ceil(q[0] / interval) + 1) / v.sweepSec;
+function sweepState(v, q, interval, dt) {
   phaseT += dt; cycleT += dt;
   if (phase === 'sweep' && phaseT >= v.sweepSec) { phase = 'hold'; phaseT = 0; }
   else if (phase === 'hold' && phaseT >= v.holdSec) { phase = 'fade'; phaseT = 0; }
   else if (phase === 'fade' && phaseT >= v.fadeSec) { phase = 'sweep'; phaseT = 0; cycleT = 0; if (scene === 'zoom') pickWindow(); }
-  let p = phase === 'sweep' ? phaseT / v.sweepSec : 1;
-  if (Q.has('sweep')) p = parseFloat(Q.get('sweep'));
-  const e = p * p * (3 - 2 * p); p = p + (e - p) * v.ease;
-  const sweepH = p >= 1 ? 1e9 : qAt(q, p);
+  const t = Q.has('sweep') ? parseFloat(Q.get('sweep')) * v.sweepSec : cycleT;
+  const sweepH = (Math.ceil(q[0] / interval) - 0.5 + t * levelRate(q, interval, v)) * interval;
   const fade = phase === 'fade' ? 1 - phaseT / v.fadeSec : (phase === 'sweep' ? Math.min(1, phaseT / 1.0) : 1);
   return { sweepH, fade, progress: Math.min(cycleT / (v.sweepSec + v.holdSec + v.fadeSec), 1) };
 }
@@ -310,7 +434,7 @@ function frame(now) {
   const q = sc.mode === 0 ? win.quant : quant.globe;
   const interval = sc.mode === 0 ? win.interval : v.interval;
   const sweepOn = sc.mode !== 2 || v.sweep === 1;
-  const st = sweepOn ? sweepState(v, q, dt) : { sweepH: 1e9, fade: Math.min(1, simT / 2), progress: 0 };
+  const st = sweepOn ? sweepState(v, q, interval, dt) : { sweepH: 1e9, fade: Math.min(1, simT / 2), progress: 0 };
 
   gl.viewport(0, 0, canvas.width, canvas.height);
   gl.useProgram(prog);
@@ -326,10 +450,14 @@ function frame(now) {
   gl.uniform1f(uni.uMinorBright, v.minorBright);
   gl.uniform1f(uni.uMajorBright, v.majorBright);
   gl.uniform1f(uni.uSweepH, st.sweepH);
-  gl.uniform1f(uni.uRiseRange, v.riseLevels * interval);
+  gl.uniform1f(uni.uRiseRange, v.lineFadeSec * (sweepOn ? levelRate(q, interval, v) : 0) * interval);
   gl.uniform1f(uni.uGlowRange, v.glowLevels * interval + 1e-3);
   gl.uniform1f(uni.uGlowBright, v.glowBright);
   gl.uniform1f(uni.uDenseMax, v.denseMax);
+  gl.uniform1f(uni.uBodyR, data.manifest.radius_m || 1737400);
+  // Earth colours (TV tweak "earthColors"): ?earthColors=1&snowLine=4000
+  gl.uniform1f(uni.uEarthCol, BODY === 'earth' && Q.get('earthColors') === '1' ? 1 : 0);
+  gl.uniform1f(uni.uSnowLine, parseFloat(Q.get('snowLine') || '4000'));
   gl.uniform1f(uni.uFade, st.fade);
   // Height cues and sweep direction are tuned on the TV (tweak panel); neutral here.
   gl.uniform1f(uni.uSweepDir, 1); gl.uniform2f(uni.uHRange, 0, 1); gl.uniform1f(uni.uTint, 0); gl.uniform1f(uni.uLowDim, 0);
@@ -352,6 +480,11 @@ function frame(now) {
     }
   }
   gl.drawArrays(gl.TRIANGLES, 0, 3);
+  const rise = Math.max(v.lineFadeSec * levelRate(q, interval, v) * interval, 1e-3);   // as uRiseRange; the sweep rises here
+  const reveal = (floorH) => { const t = Math.min(1, Math.max(0, (st.sweepH - Math.ceil(floorH / interval) * interval) / rise)); return t * t * (3 - 2 * t); };
+  drawNames(sc.mode === 0 ? [win.lat + Math.sin(win.lon * 7 + win.lat * 3) * v.driftPan * (st.progress - 0.5) * win.hh0 * 2,
+    win.lon + Math.cos(win.lon * 7 + win.lat * 3) * v.driftPan * (st.progress - 0.5) * win.hh0 * 2 / Math.cos(win.lat),
+    win.hh0 * (1 - v.driftZoom * st.progress)] : null, st.fade, reveal);
   if (sc.mode === 0) status(`${phase} ${phaseT.toFixed(1)}s  sweep ${st.sweepH < 1e8 ? st.sweepH.toFixed(0) + ' m' : 'done'}\n` +
     `window lat ${(win.lat * 180 / Math.PI).toFixed(1)} lon ${(win.lon * 180 / Math.PI).toFixed(1)} +-${(win.hh0 * 180 / Math.PI).toFixed(1)} deg  tex ${win.w}x${win.h}  sigma ${win.roughness.toFixed(0)} m  interval ${win.interval} m`);
   else status(`${sweepOn ? phase + ' ' + phaseT.toFixed(1) + 's' : 'no sweep'}  t ${simT.toFixed(0)}s`);
@@ -387,7 +520,7 @@ addEventListener('keydown', (e) => {
   if (e.key === 'r' || e.key === 'R') document.getElementById('restart').onclick();
   if (e.key === ' ') paused = !paused;
 });
-init().catch(e => { status('error: ' + e.message); document.title = 'Moon contour preview (error)'; });
+init().catch(e => { status('error: ' + e.message); document.title = 'Contour preview (error)'; });
 </script>
 </body>
 </html>

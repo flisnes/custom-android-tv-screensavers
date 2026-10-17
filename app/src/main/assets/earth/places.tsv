@@ -1,0 +1,356 @@
+sea	Arctic Ocean
+sea	Southern Ocean
+sea	North Atlantic Ocean
+sea	North Pacific Ocean
+sea	South Pacific Ocean
+sea	Indian Ocean
+sea	South Atlantic Ocean
+sea	Black Sea
+sea	Philippine Sea
+sea	Tasman Sea
+sea	Bay of Bengal
+sea	South China Sea
+sea	Arabian Sea
+sea	Beaufort Sea
+sea	Caribbean Sea
+sea	Gulf of Mexico
+sea	Labrador Sea
+sea	Hudson Bay
+sea	Caspian Sea
+sea	Baffin Bay
+sea	Gulf of Alaska
+sea	Red Sea
+sea	Sea of Okhotsk
+sea	Weddell Sea
+sea	Persian Gulf
+sea	Mediterranean Sea
+sea	Ross Sea
+sea	Coral Sea
+sea	Sea of Japan
+sea	Celebes Sea
+sea	Sulu Sea
+sea	Norwegian Sea
+sea	Greenland Sea
+sea	Banda Sea
+sea	Luzon Strait
+sea	Bay of Biscay
+sea	Mozambique Channel
+sea	Gulf of Guinea
+sea	Scotia Sea
+sea	Baltic Sea
+sea	Barents Sea
+sea	North Sea
+sea	Irish Sea
+sea	Java Sea
+sea	Andaman Sea
+sea	Yellow Sea
+sea	East China Sea
+sea	Chukchi Sea
+sea	Bahía de Campeche
+sea	Arafura Sea
+sea	Timor Sea
+sea	Gulf of Thailand
+sea	Laccadive Sea
+sea	Bellingshausen Sea
+sea	Amundsen Sea
+sea	Davis Strait
+sea	Kara Sea
+sea	Laptev Sea
+sea	Drake Passage
+sea	Bering Sea
+sea	Sargasso Sea
+sea	Great Australian Bight
+sea	Gulf of Aden
+sea	Gulf of Oman
+sea	Tyrrhenian Sea
+sea	White Sea
+sea	James Bay
+sea	Gulf of Carpentaria
+sea	Golfo de California
+sea	Hudson Strait
+sea	English Channel
+sea	Gulf of Honduras
+sea	Gulf of Bothnia
+sea	Adriatic Sea
+sea	Great Barrier Reef
+sea	Bristol Channel
+sea	Inner Seas
+sea	Gulf of Finland
+sea	Golfe du Lion
+sea	Straits of Florida
+sea	Bay of Plenty
+sea	The North Western Passages
+sea	Ionian Sea
+sea	Gulf of Saint Lawrence
+sea	Molucca Sea
+sea	Bismarck Sea
+sea	Solomon Sea
+sea	Gulf of Tonkin
+sea	Bay of Fundy
+sea	Río de la Plata
+sea	Strait of Malacca
+sea	Strait of Singapore
+sea	Makassar Strait
+sea	Ceram Sea
+sea	Inner Sea
+sea	Taiwan Strait
+sea	Cook Inlet
+sea	Bristol Bay
+sea	Melville Bay
+sea	Gulf of Maine
+sea	Chesapeake Bay
+sea	Strait of Gibraltar
+sea	Golfo San Jorge
+sea	Balearic Sea
+sea	Aegean Sea
+sea	Gulf of Mannar
+sea	Shelikhova Gulf
+sea	Bo Hai
+sea	Gulf of Kutch
+sea	Golfo de Panamá
+sea	Amundsen Gulf
+sea	Viscount Melville Sound
+sea	Ungava Bay
+sea	Korea Strait
+land	Zimbabwe
+land	Zambia
+land	Yemen
+land	Vietnam
+land	Venezuela
+land	Vatican
+land	Vanuatu
+land	Uzbekistan
+land	Uruguay
+land	Federated States of Micronesia
+land	Marshall Islands
+land	Northern Mariana Islands
+land	United States Virgin Islands
+land	Guam
+land	American Samoa
+land	Puerto Rico
+land	United States
+land	South Georgia and the Islands
+land	British Indian Ocean Territory
+land	Saint Helena
+land	Pitcairn Islands
+land	Anguilla
+land	Falkland Islands
+land	Cayman Islands
+land	Bermuda
+land	British Virgin Islands
+land	Turks and Caicos Islands
+land	Montserrat
+land	Jersey
+land	Guernsey
+land	Isle of Man
+land	United Kingdom
+land	United Arab Emirates
+land	Ukraine
+land	Uganda
+land	Turkmenistan
+land	Turkey
+land	Tunisia
+land	Trinidad and Tobago
+land	Tonga
+land	Togo
+land	East Timor
+land	Thailand
+land	Tanzania
+land	Tajikistan
+land	Taiwan
+land	Syria
+land	Switzerland
+land	Sweden
+land	Eswatini
+land	Suriname
+land	South Sudan
+land	Sudan
+land	Sri Lanka
+land	Spain
+land	South Korea
+land	South Africa
+land	Somalia
+land	Somaliland
+land	Solomon Islands
+land	Slovakia
+land	Slovenia
+land	Singapore
+land	Sierra Leone
+land	Seychelles
+land	Serbia
+land	Senegal
+land	Saudi Arabia
+land	São Tomé and Principe
+land	San Marino
+land	Samoa
+land	Saint Vincent and the Grenadines
+land	Saint Lucia
+land	Saint Kitts and Nevis
+land	Rwanda
+land	Russia
+land	Romania
+land	Qatar
+land	Portugal
+land	Poland
+land	Philippines
+land	Peru
+land	Paraguay
+land	Papua New Guinea
+land	Panama
+land	Palau
+land	Pakistan
+land	Oman
+land	Norway
+land	North Korea
+land	Nigeria
+land	Niger
+land	Nicaragua
+land	New Zealand
+land	Niue
+land	Cook Islands
+land	Netherlands
+land	Aruba
+land	Curaçao
+land	Nepal
+land	Nauru
+land	Namibia
+land	Mozambique
+land	Morocco
+land	Western Sahara
+land	Montenegro
+land	Mongolia
+land	Moldova
+land	Monaco
+land	Mexico
+land	Mauritius
+land	Mauritania
+land	Malta
+land	Mali
+land	Maldives
+land	Malaysia
+land	Malawi
+land	Madagascar
+land	North Macedonia
+land	Luxembourg
+land	Lithuania
+land	Liechtenstein
+land	Libya
+land	Liberia
+land	Lesotho
+land	Lebanon
+land	Latvia
+land	Laos
+land	Kyrgyzstan
+land	Kuwait
+land	Kosovo
+land	Kiribati
+land	Kenya
+land	Kazakhstan
+land	Jordan
+land	Japan
+land	Jamaica
+land	Italy
+land	Israel
+land	Palestine
+land	Ireland
+land	Iraq
+land	Iran
+land	Indonesia
+land	India
+land	Iceland
+land	Hungary
+land	Honduras
+land	Haiti
+land	Guyana
+land	Guinea-Bissau
+land	Guinea
+land	Guatemala
+land	Grenada
+land	Greece
+land	Ghana
+land	Germany
+land	Georgia
+land	The Gambia
+land	Gabon
+land	France
+land	Saint Pierre and Miquelon
+land	Wallis and Futuna
+land	Saint-Martin
+land	Saint-Barthélemy
+land	French Polynesia
+land	New Caledonia
+land	French Southern and Antarctic Lands
+land	Åland
+land	Finland
+land	Fiji
+land	Ethiopia
+land	Estonia
+land	Eritrea
+land	Equatorial Guinea
+land	El Salvador
+land	Egypt
+land	Ecuador
+land	Dominican Republic
+land	Dominica
+land	Djibouti
+land	Greenland
+land	Faroe Islands
+land	Denmark
+land	Czech Republic
+land	Northern Cyprus
+land	Cyprus
+land	Cuba
+land	Croatia
+land	Ivory Coast
+land	Costa Rica
+land	Democratic Republic of the Congo
+land	Republic of the Congo
+land	Comoros
+land	Colombia
+land	China
+land	Macao
+land	Hong Kong
+land	Chile
+land	Chad
+land	Central African Republic
+land	Cape Verde
+land	Canada
+land	Cameroon
+land	Cambodia
+land	Myanmar
+land	Burundi
+land	Burkina Faso
+land	Bulgaria
+land	Brunei
+land	Brazil
+land	Botswana
+land	Bosnia and Herzegovina
+land	Bolivia
+land	Bhutan
+land	Benin
+land	Belize
+land	Belgium
+land	Belarus
+land	Barbados
+land	Bangladesh
+land	Bahrain
+land	Bahamas
+land	Azerbaijan
+land	Austria
+land	Australia
+land	Indian Ocean Territories
+land	Heard I. and McDonald Islands
+land	Norfolk Island
+land	Ashmore and Cartier Islands
+land	Armenia
+land	Argentina
+land	Antigua and Barbuda
+land	Angola
+land	Andorra
+land	Algeria
+land	Albania
+land	Afghanistan
+land	Siachen Glacier
+land	Antarctica
+land	Sint Maarten
+land	Tuvalu

@@ -1,0 +1,26 @@
+{
+  "scale_m_per_dn": 1.0,
+  "radius_m": 6371000.0,
+  "source": "NOAA ETOPO 2022 60s surface",
+  "globe": {
+    "file": "etopo_12.bin",
+    "width": 4320,
+    "height": 2160,
+    "ppd": 12,
+    "blur_sigma": 1.5,
+    "lat_min": -90,
+    "lat_max": 90,
+    "min_dn": -9152,
+    "max_dn": 5956
+  },
+  "zoom": {
+    "file": "etopo_30.bin",
+    "width": 10800,
+    "height": 4320,
+    "ppd": 30,
+    "lat_min": -72,
+    "lat_max": 72,
+    "min_dn": -10688,
+    "max_dn": 7464
+  }
+}

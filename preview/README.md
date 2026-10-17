@@ -68,7 +68,10 @@ Generate the assets first if `app/src/main/assets/moon/*.bin` are missing (see
 - URL parameters give deterministic frames (handy for screenshots):
   `?scene=zoom|globe|lit&seed=3&t=20` (fixed sim time), `&lat=-43&lon=349&hh=6` (force a zoom
   window, degrees), `&sweep=0.5` (force sweep progress), `&panel=0`, and `&p.<param>=<value>`
-  for any slider (e.g. `&p.interval=750&p.globeBlur=2`).
+  for any slider (e.g. `&p.interval=750&p.globeBlur=2`), and `&body=earth` for the Earth twins of the
+  scenes (ETOPO data from `app/src/main/assets/earth/`, see `tools/earth_data.py`), `&earthColors=1`
+  (`&snowLine=4000`) for the Earth colours, `&craterNames=1` for crater names on the moon zoom (a 2D-canvas
+  mirror of `CraterLabels.kt`); the Earth zoom shows its place name unless `&placeNames=0`.
 
 Line widths are in 1080p pixels; the renderer scales them with the surface height, so a 4K
 surface draws proportionally thicker lines (and resolves far more contours before they merge

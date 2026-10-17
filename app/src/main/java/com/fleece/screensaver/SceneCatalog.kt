@@ -44,6 +44,27 @@ object SceneCatalog {
             params = SceneParams.moon(MoonRenderer.Mode.LIT)) { c, t ->
             MoonRenderer(c, MoonRenderer.Mode.LIT, t)
         },
+        SceneInfo("moon_globe_sweep", "Moon globe sweep", "Spinning Moon with pulses of light running endlessly through the contours",
+            glVersion = 3, params = SceneParams.moon(MoonRenderer.Mode.PULSE)) { c, t ->
+            MoonRenderer(c, MoonRenderer.Mode.PULSE, t)
+        },
+        // Earth twins of the moon scenes (NOAA ETOPO 2022 land + sea floor; sea level is the 0 m line).
+        SceneInfo("earth_zoom", "Earth close-up", "Contour sweep over a random patch of the Earth, sea floor included", glVersion = 3,
+            params = SceneParams.moon(MoonRenderer.Mode.ZOOM, MoonRenderer.Body.EARTH)) { c, t ->
+            MoonRenderer(c, MoonRenderer.Mode.ZOOM, t, MoonRenderer.Body.EARTH)
+        },
+        SceneInfo("earth_globe", "Earth globe", "Spinning Earth with a continuous contour sweep", glVersion = 3,
+            params = SceneParams.moon(MoonRenderer.Mode.GLOBE, MoonRenderer.Body.EARTH)) { c, t ->
+            MoonRenderer(c, MoonRenderer.Mode.GLOBE, t, MoonRenderer.Body.EARTH)
+        },
+        SceneInfo("earth_lit", "Lit Earth globe", "Spinning Earth, only contours facing the light are drawn", glVersion = 3,
+            params = SceneParams.moon(MoonRenderer.Mode.LIT, MoonRenderer.Body.EARTH)) { c, t ->
+            MoonRenderer(c, MoonRenderer.Mode.LIT, t, MoonRenderer.Body.EARTH)
+        },
+        SceneInfo("earth_globe_sweep", "Earth globe sweep", "Spinning Earth with pulses of light running endlessly through the contours",
+            glVersion = 3, params = SceneParams.moon(MoonRenderer.Mode.PULSE, MoonRenderer.Body.EARTH)) { c, t ->
+            MoonRenderer(c, MoonRenderer.Mode.PULSE, t, MoonRenderer.Body.EARTH)
+        },
     )
 
     fun indexOf(key: String): Int = scenes.indexOfFirst { it.key == key }

@@ -17,5 +17,6 @@ local.properties
 *.jks
 *.keystore
 
-# Moon height maps (~130 MB, regenerate with tools/moon_data.py)
+# Moon / Earth height maps (~130 / ~110 MB, regenerate with tools/moon_data.py, tools/earth_data.py)
 app/src/main/assets/moon/*.bin
+app/src/main/assets/earth/*.bin
